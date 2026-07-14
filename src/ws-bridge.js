@@ -128,6 +128,10 @@ export function requestFromExtension(action, payload = {}, timeoutMs = null) {
 
 export function requestCaptcha() {
   return new Promise((resolve, reject) => {
+    const sent = sendToExtension({ type: 'captcha_required' });
+    if (!sent) {
+      return reject(new Error('BetterSuno extension is not connected.'));
+    }
     captchaResolve = resolve;
     captchaReject = reject;
     captchaTimer = setTimeout(() => {

@@ -17,6 +17,13 @@
   "engines": {
     "node": ">=18"
   },
+  "files": [
+    "src/",
+    "LICENSE",
+    "README.md",
+    "API.md",
+    "package.json"
+  ],
   "keywords": [
     "suno",
     "mcp",
