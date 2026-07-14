@@ -421,9 +421,10 @@ describe('MCP Server — with mock token via WebSocket bridge', () => {
     mockApi.requests.length = 0;
 
     const res = await client.callTool('search_songs', { query: 'rock ballad', page: 2 });
-    assert.equal(mockApi.requests[0].method, 'POST');
-    assert.equal(mockApi.requests[0].path, '/api/search/');
-    assert.equal(mockApi.requests[0].body.search_queries[0].term, 'rock ballad');
+    // requests[0] is GET /api/user/me from auth.getCurrentUser()
+    assert.equal(mockApi.requests[1].method, 'POST');
+    assert.equal(mockApi.requests[1].path, '/api/search/');
+    assert.equal(mockApi.requests[1].body.search_queries[0].term, 'rock ballad');
     const data = JSON.parse(res.content[0].text);
     assert.equal(data.count, 1, 'only own songs returned');
     assert.equal(data.clips[0].id, 'own1');
@@ -498,6 +499,10 @@ describe('MCP Server — with mock token via WebSocket bridge', () => {
   });
 
   test('set_visibility sends is_public in body', async () => {
+    mockApi.setResponse('/api/clip/clip-456', {
+      status: 200,
+      body: { id: 'clip-456', user_id: 'me-123', title: 'Test Song' },
+    });
     mockApi.setResponse('/api/gen/clip-456/set_visibility/', {
       status: 200,
       body: { success: true },
@@ -505,8 +510,9 @@ describe('MCP Server — with mock token via WebSocket bridge', () => {
     mockApi.requests.length = 0;
 
     await client.callTool('set_visibility', { clip_id: 'clip-456', is_public: true });
-    assert.equal(mockApi.requests[0].body.is_public, true);
-    assert.equal(mockApi.requests[0].body.submit_to_contest, false);
+    // requests[0] is GET /api/clip/clip-456 from assertOwned
+    assert.equal(mockApi.requests[1].body.is_public, true);
+    assert.equal(mockApi.requests[1].body.submit_to_contest, false);
   });
 
   test('remaster_song calls /api/generate/upsample', async () => {
@@ -545,6 +551,7 @@ describe('MCP Server — with mock token via WebSocket bridge', () => {
       body: {
         id: 'song-with-urls',
         title: 'Test',
+        user_id: 'me-123',
         audio_url: 'https://cdn1.suno.ai/audio.mp3',
         image_url: 'https://cdn1.suno.ai/image.jpg',
         metadata: { prompt: 'some lyrics' },
@@ -771,6 +778,14 @@ describe('MCP Server — create_song payload construction', () => {
   });
 
   test('cover_song sets cover_clip_id and task=cover', async () => {
+    mockApi.setResponse('/api/user/me', {
+      status: 200,
+      body: { user_id: 'me-123', handle: 'me' },
+    });
+    mockApi.setResponse('/api/clip/source-clip-1', {
+      status: 200,
+      body: { id: 'source-clip-1', user_id: 'me-123', title: 'Original' },
+    });
     mockApi.setResponse('/api/c/check', { status: 200, body: { required: false, captcha_version: 1 } });
     mockApi.setResponse('/api/generate/v2-web/', { status: 200, body: { clips: [] } });
     mockApi.requests.length = 0;
@@ -781,7 +796,11 @@ describe('MCP Server — create_song payload construction', () => {
       end_s: 30,
     });
 
-    const genBody = mockApi.requests[1].body;
+    // requests[0]: GET /api/clip/source-clip-1 (assertCanCover: fetchClip)
+    // requests[1]: GET /api/user/me (assertCanCover: getCurrentUser)
+    // requests[2]: POST /api/c/check (captcha)
+    // requests[3]: POST /api/generate/v2-web/
+    const genBody = mockApi.requests[3].body;
     assert.equal(genBody.cover_clip_id, 'source-clip-1');
     assert.equal(genBody.cover_start_s, 10);
     assert.equal(genBody.cover_end_s, 30);
@@ -789,6 +808,14 @@ describe('MCP Server — create_song payload construction', () => {
   });
 
   test('extend_song sets continue_clip_id, continue_at, and task=extend', async () => {
+    mockApi.setResponse('/api/user/me', {
+      status: 200,
+      body: { user_id: 'me-123', handle: 'me' },
+    });
+    mockApi.setResponse('/api/clip/source-clip-2', {
+      status: 200,
+      body: { id: 'source-clip-2', user_id: 'me-123', title: 'Original' },
+    });
     mockApi.setResponse('/api/c/check', { status: 200, body: { required: false, captcha_version: 1 } });
     mockApi.setResponse('/api/generate/v2-web/', { status: 200, body: { clips: [] } });
     mockApi.requests.length = 0;
@@ -799,7 +826,10 @@ describe('MCP Server — create_song payload construction', () => {
       lyrics: 'more lyrics here',
     });
 
-    const genBody = mockApi.requests[1].body;
+    // requests[0]: GET /api/clip/source-clip-2 (assertCanCover: fetchClip)
+    // requests[1]: POST /api/c/check (captcha)
+    // requests[2]: POST /api/generate/v2-web/ (_currentUser cached from previous test)
+    const genBody = mockApi.requests[2].body;
     assert.equal(genBody.continue_clip_id, 'source-clip-2');
     assert.equal(genBody.continue_at, 45.5);
     assert.equal(genBody.prompt, 'more lyrics here');

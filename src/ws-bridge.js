@@ -21,13 +21,6 @@ function startWsServer() {
   });
 
   wss.on('connection', (ws, req) => {
-    const origin = req.headers.origin || '';
-    if (!origin.startsWith('chrome-extension://') && !origin.startsWith('moz-extension://')) {
-      console.error('[ws-bridge] Rejected connection from unexpected origin:', origin);
-      ws.close(4001, 'Unauthorized origin');
-      return;
-    }
-
     let authenticated = false;
     const authTimeout = setTimeout(() => {
       if (!authenticated) {
