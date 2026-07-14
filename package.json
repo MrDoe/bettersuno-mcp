@@ -1,7 +1,7 @@
 {
   "name": "bettersuno-mcp",
   "version": "1.0.0",
-  "description": "MCP server for BetterSuno — exposes Suno API features to AI agents",
+  "description": "MCP server for BetterSuno — exposes Suno API features to AI agents via the Model Context Protocol",
   "type": "module",
   "bin": {
     "bettersuno-mcp": "src/index.js"
@@ -13,5 +13,24 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
     "ws": "^8.18.0"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "suno",
+    "mcp",
+    "model-context-protocol",
+    "ai-music",
+    "bettersuno"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/MrDoe/bettersuno-mcp.git"
+  },
+  "homepage": "https://github.com/MrDoe/bettersuno-mcp#readme",
+  "bugs": {
+    "url": "https://github.com/MrDoe/bettersuno-mcp/issues"
   }
 }
