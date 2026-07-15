@@ -23,7 +23,7 @@ class SunoClient {
       return { ok: false, status: 0, error: 'No auth token. Is BetterSuno extension running and connected?', data: null };
     }
 
-    const headers = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' };
+    const headers = { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', 'Origin': 'https://suno.com', 'Referer': 'https://suno.com/' };
 
     let lastError = null;
     let delay = config.initialRetryDelayMs;
@@ -77,6 +77,7 @@ class SunoClient {
 
   async captchaCheck(ctype = 'generation') {
     const result = await this.POST('/api/c/check', { body: { ctype } });
+    console.error('[suno-client] captchaCheck result:', JSON.stringify({ ok: result.ok, status: result.status, required: result.data?.required, captchaVersion: result.data?.captcha_version, error: result.error }));
     if (result.ok) {
       const required = result.data?.required === true;
       return { required, captchaVersion: result.data?.captcha_version || null };
@@ -87,9 +88,12 @@ class SunoClient {
   async ensureCaptcha() {
     const check = await this.captchaCheck();
     if (check.required) {
+      console.error('[suno-client] captcha required, requesting from extension...');
       const captchaToken = await requestCaptcha();
+      console.error('[suno-client] captcha token received:', captchaToken ? captchaToken?.slice(0, 20) + '...' : 'NULL');
       return { token: captchaToken, tokenProvider: check.captchaVersion };
     }
+    console.error('[suno-client] captcha not required (or check failed), using null token');
     return { token: null, tokenProvider: null };
   }
 
@@ -100,7 +104,9 @@ class SunoClient {
       token: captcha.token,
       token_provider: captcha.tokenProvider,
     };
-    return this.POST('/api/generate/v2-web/', { body: fullPayload });
+    const result = await this.POST('/api/generate/v2-web/', { body: fullPayload });
+    console.error('[suno-client] generate result:', JSON.stringify({ ok: result.ok, status: result.status, error: result.error, data: result.data }));
+    return result;
   }
 }
 

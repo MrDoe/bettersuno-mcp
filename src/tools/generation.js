@@ -1,3 +1,4 @@
+import { requestFromExtension } from '../ws-bridge.js';
 import { sunoClient } from '../suno-client.js';
 import { assertCanCover } from '../auth.js';
 
@@ -51,6 +52,12 @@ export function registerGenerationTools(server, allTools) {
         },
       };
 
+      try {
+        const relayResult = await requestFromExtension('relay_generate', { payload }, 30000);
+        if (relayResult?.ok) {
+          return { content: [{ type: 'text', text: JSON.stringify(relayResult.data, null, 2) }] };
+        }
+      } catch (_e) {}
       const result = await sunoClient.generate(payload);
       if (!result.ok) throw new Error(result.error || 'Generation failed');
       return { content: [{ type: 'text', text: JSON.stringify(result.data, null, 2) }] };
@@ -85,6 +92,12 @@ export function registerGenerationTools(server, allTools) {
         },
       };
 
+      try {
+        const relayResult = await requestFromExtension('relay_generate', { payload }, 30000);
+        if (relayResult?.ok) {
+          return { content: [{ type: 'text', text: JSON.stringify(relayResult.data, null, 2) }] };
+        }
+      } catch (_e) {}
       const result = await sunoClient.generate(payload);
       if (!result.ok) throw new Error(result.error || 'Generation failed');
       return { content: [{ type: 'text', text: JSON.stringify(result.data, null, 2) }] };
