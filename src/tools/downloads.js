@@ -127,6 +127,41 @@ export function registerDownloadTools(server, allTools) {
 
       return { content: [{ type: 'text', text: `Cover image saved to ${filePath} (${buffer.length} bytes)` }] };
     }),
+
+    tool('download_sample_pack', 'Download a sample pack for a song (Suno Samples)', {
+      type: 'object',
+      properties: {
+        clip_id: { type: 'string', description: 'Song clip ID' },
+        output_dir: { type: 'string', description: 'Output directory (defaults to current dir)' },
+      },
+      required: ['clip_id'],
+    }, async (args) => {
+      const song = await assertOwned(args.clip_id);
+      const result = await sunoClient.GET(`/api/download/sample-pack/${encodeURIComponent(args.clip_id)}`);
+      if (!result.ok) throw new Error(result.error || 'Sample pack download failed');
+
+      const data = result.data;
+      let downloadUrl = null;
+      if (typeof data === 'string') downloadUrl = data;
+      else if (data?.url) downloadUrl = data.url;
+      else if (data?.download_url) downloadUrl = data.download_url;
+      if (!downloadUrl) throw new Error('No download URL in response');
+
+      const response = await fetch(downloadUrl, {
+        headers: { 'Authorization': `Bearer ${getToken()}` },
+      });
+      if (!response.ok) throw new Error(`Download failed: HTTP ${response.status}`);
+
+      const buffer = Buffer.from(await response.arrayBuffer());
+      const title = sanitizeFilename(song.title || `song_${args.clip_id.slice(-4)}`);
+      const filename = `${title}_${args.clip_id.slice(-4)}_sample_pack.zip`;
+      const outputDir = args.output_dir ? resolve(args.output_dir) : process.cwd();
+      await ensureDir(outputDir);
+      const filePath = join(outputDir, filename);
+      await writeFile(filePath, buffer);
+
+      return { content: [{ type: 'text', text: `Sample pack saved to ${filePath} (${buffer.length} bytes)` }] };
+    }),
   ];
 
   allTools.push(...tools);

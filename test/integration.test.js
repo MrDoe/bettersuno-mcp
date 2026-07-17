@@ -190,10 +190,10 @@ describe('MCP Server — startup & protocol', () => {
     assert.ok(true, 'Server started and responded to initialize');
   });
 
-  test('tools/list returns all 59 tools', async () => {
+  test('tools/list returns all tools', async () => {
     const result = await client.listTools();
     const names = result.tools.map(t => t.name);
-    assert.equal(result.tools.length, 59, 'Expected exactly 59 tools');
+    assert.equal(result.tools.length, 70, 'Expected 70 tools');
     for (const expected of EXPECTED_TOOLS) {
       assert.ok(names.includes(expected), `Missing tool: ${expected}`);
     }

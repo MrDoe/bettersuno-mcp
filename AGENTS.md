@@ -8,7 +8,7 @@
 ## Architecture
 | File | Role |
 |------|------|
-| `src/index.js` | Entry point: registers all 59 tools across 12 modules, starts stdio transport. |
+| `src/index.js` | Entry point: registers all 74 tools across 12 modules, starts stdio transport. |
 | `src/suno-client.js` | HTTP client wrapping Suno's `studio-api.prod.suno.com` — GET/POST helpers with 429 backoff and 401 token refresh. |
 | `src/ws-bridge.js` | WebSocket server on `127.0.0.1:9423` — receives auth token, captcha tokens, and extension responses from the BetterSuno extension. |
 | `src/auth.js` | Ownership gate — `assertOwned`, `assertCanCover`, `fetchClip` helpers. |
@@ -33,6 +33,21 @@ This server **requires** the [BetterSuno browser extension](https://github.com/M
 - `token:null, token_provider:null` required in generation payload (else 422).
 - Mode switch: `gpt_description_prompt` empty → Custom mode (uses `prompt` lyrics); non-empty → Inspiration mode (auto-lyrics).
 - Sliders in `metadata.control_sliders` (`style_weight`, `weirdness_constraint`, `audio_weight`, 0–1) + `metadata.can_control_sliders` array.
+- **All generation tools** (`create_song`, `inspire_song`, `cover_song`, `extend_song`) support:
+  - `negative_tags` for style exclusion
+  - `weirdness`, `style_weight`, `audio_weight` control sliders (0-100 → 0.0-1.0)
+  - `persona_id` + `persona_model` for voice/style consistency
+  - `persona_model: "voice_persona"` for Vox voice clones, `"style_persona"` for style personas
+- **Cover song** now supports `lyrics` (new lyrics), `title`, `negative_tags`, all sliders, and voices.
+- **Concat** (`POST /api/generate/concat/v2/`) powers add-vocals, add-instrumental, replace-section operations.
+- **Lyrics tools**: `generate_lyrics` (cowrite), `lyrics_infill`, `lyrics_mashup` for AI-assisted lyric writing.
+
+## Edit/Clip operations
+New tools for advanced audio editing:
+- `crop_clip`, `fade_clip` — trim and fade audio
+- `reverse_clip`, `adjust_speed` — transform audio
+- `set_clip_prompt`, `set_clip_configurations` — update clip metadata
+- `download_sample_pack` — download sample packs
 
 ## Ownership gate
 - `auth.js` `assertOwned`: download/metadata/delete throw for non-owned songs.
@@ -46,3 +61,5 @@ This server **requires** the [BetterSuno browser extension](https://github.com/M
 - **Search**: `POST /api/search/` with `search_queries` and `search_type` (song/user/playlist). GET variants return 405.
 - **429 retry**: exponential backoff 1s→30s, 5 retries. 401 → token auto-refreshed.
 - **Playback**: works for ANY song. MCP→WS→extension→suno tab player.
+- **Crop/fade/reverse/adjust-speed**: only work on owned clips (assertOwned gate).
+- **Concat**: currently no ownership gate — runs against any remixable clip.

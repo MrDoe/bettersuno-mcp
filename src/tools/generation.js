@@ -6,6 +6,35 @@ function tool(name, description, inputSchema, handler) {
   return { name, description, inputSchema, handler };
 }
 
+function buildControlSliders(args) {
+  const controlSliders = {};
+  const canControl = [];
+  if (args.weirdness !== undefined) { controlSliders.weirdness_constraint = args.weirdness / 100; canControl.push('weirdness_constraint'); }
+  if (args.style_weight !== undefined) { controlSliders.style_weight = args.style_weight / 100; canControl.push('style_weight'); }
+  if (args.audio_weight !== undefined) { controlSliders.audio_weight = args.audio_weight / 100; canControl.push('audio_weight'); }
+  return { controlSliders, canControl };
+}
+
+function personaFields(args) {
+  const f = {};
+  if (args.persona_id) {
+    f.persona_id = args.persona_id;
+    if (args.persona_model) f.persona_model = args.persona_model;
+  }
+  return f;
+}
+
+function metadataWithSliders(args, createMode) {
+  const { controlSliders, canControl } = buildControlSliders(args);
+  return {
+    web_client_pathname: '/create',
+    create_mode: createMode || 'custom',
+    create_session_token: crypto.randomUUID(),
+    ...(Object.keys(controlSliders).length > 0 ? { control_sliders: controlSliders } : {}),
+    ...(canControl.length > 0 ? { can_control_sliders: canControl } : {}),
+  };
+}
+
 export function registerGenerationTools(server, allTools) {
   const tools = [
     tool('create_song', 'Generate a song from lyrics and style tags (Custom mode)', {
@@ -21,15 +50,10 @@ export function registerGenerationTools(server, allTools) {
         style_weight: { type: 'number', description: 'Style influence 0-100' },
         audio_weight: { type: 'number', description: 'Audio influence 0-100' },
         persona_id: { type: 'string', description: 'Persona ID for voice consistency' },
+        persona_model: { type: 'string', description: 'Persona model type (style_persona, voice_persona)', default: 'style_persona' },
       },
       required: ['lyrics'],
     }, async (args) => {
-      const controlSliders = {};
-      const canControl = [];
-      if (args.weirdness !== undefined) { controlSliders.weirdness_constraint = args.weirdness / 100; canControl.push('weirdness_constraint'); }
-      if (args.style_weight !== undefined) { controlSliders.style_weight = args.style_weight / 100; canControl.push('style_weight'); }
-      if (args.audio_weight !== undefined) { controlSliders.audio_weight = args.audio_weight / 100; canControl.push('audio_weight'); }
-
       const payload = {
         mv: args.mv || 'chirp-fenix',
         gpt_description_prompt: '',
@@ -42,14 +66,8 @@ export function registerGenerationTools(server, allTools) {
         continue_at: null,
         continue_clip_id: null,
         task: null,
-        ...(args.persona_id ? { persona_id: args.persona_id } : {}),
-        metadata: {
-          web_client_pathname: '/create',
-          create_mode: 'custom',
-          create_session_token: crypto.randomUUID(),
-          ...(Object.keys(controlSliders).length > 0 ? { control_sliders: controlSliders } : {}),
-          ...(canControl.length > 0 ? { can_control_sliders: canControl } : {}),
-        },
+        ...personaFields(args),
+        metadata: metadataWithSliders(args, 'custom'),
       };
 
       try {
@@ -71,6 +89,12 @@ export function registerGenerationTools(server, allTools) {
         instrumental: { type: 'boolean', description: 'Make instrumental' },
         mv: { type: 'string', description: 'Model version', default: 'chirp-fenix' },
         tags: { type: 'string', description: 'Additional style tags' },
+        negative_tags: { type: 'string', description: 'Styles to avoid' },
+        weirdness: { type: 'number', description: 'Weirdness 0-100' },
+        style_weight: { type: 'number', description: 'Style influence 0-100' },
+        audio_weight: { type: 'number', description: 'Audio influence 0-100' },
+        persona_id: { type: 'string', description: 'Persona ID for voice consistency' },
+        persona_model: { type: 'string', description: 'Persona model type (style_persona, voice_persona)' },
       },
       required: ['description'],
     }, async (args) => {
@@ -81,15 +105,13 @@ export function registerGenerationTools(server, allTools) {
         make_instrumental: args.instrumental || false,
         title: args.title || '',
         tags: args.tags || '',
+        negative_tags: args.negative_tags || '',
         generation_type: 'TEXT',
         continue_at: null,
         continue_clip_id: null,
         task: null,
-        metadata: {
-          web_client_pathname: '/create',
-          create_mode: 'inspiration',
-          create_session_token: crypto.randomUUID(),
-        },
+        ...personaFields(args),
+        metadata: metadataWithSliders(args, 'inspiration'),
       };
 
       try {
@@ -103,15 +125,23 @@ export function registerGenerationTools(server, allTools) {
       return { content: [{ type: 'text', text: JSON.stringify(result.data, null, 2) }] };
     }),
 
-    tool('cover_song', 'Create a cover version of an existing song', {
+    tool('cover_song', 'Create a cover version of an existing song (optionally with new lyrics)', {
       type: 'object',
       properties: {
         clip_id: { type: 'string', description: 'ID of the song to cover' },
+        lyrics: { type: 'string', description: 'Optional new lyrics for the cover (if empty, uses original lyrics)' },
+        title: { type: 'string', description: 'Song title for the cover' },
+        tags: { type: 'string', description: 'Style tags for the cover' },
+        negative_tags: { type: 'string', description: 'Styles to avoid' },
         start_s: { type: 'number', description: 'Start time in seconds (optional)' },
         end_s: { type: 'number', description: 'End time in seconds (optional)' },
         mv: { type: 'string', description: 'Model version', default: 'chirp-fenix' },
-        tags: { type: 'string', description: 'Style tags for the cover' },
         instrumental: { type: 'boolean', description: 'Make instrumental' },
+        weirdness: { type: 'number', description: 'Weirdness 0-100' },
+        style_weight: { type: 'number', description: 'Style influence 0-100' },
+        audio_weight: { type: 'number', description: 'Audio influence 0-100' },
+        persona_id: { type: 'string', description: 'Persona ID for voice consistency' },
+        persona_model: { type: 'string', description: 'Persona model type (style_persona, voice_persona)' },
       },
       required: ['clip_id'],
     }, async (args) => {
@@ -119,10 +149,11 @@ export function registerGenerationTools(server, allTools) {
       const payload = {
         mv: args.mv || 'chirp-fenix',
         gpt_description_prompt: '',
-        prompt: '',
+        prompt: args.lyrics || '',
         make_instrumental: args.instrumental || false,
-        title: '',
+        title: args.title || '',
         tags: args.tags || '',
+        negative_tags: args.negative_tags || '',
         generation_type: 'TEXT',
         cover_clip_id: args.clip_id,
         cover_start_s: args.start_s ?? null,
@@ -130,11 +161,8 @@ export function registerGenerationTools(server, allTools) {
         continue_at: null,
         continue_clip_id: null,
         task: 'cover',
-        metadata: {
-          web_client_pathname: '/create',
-          create_mode: 'custom',
-          create_session_token: crypto.randomUUID(),
-        },
+        ...personaFields(args),
+        metadata: metadataWithSliders(args, 'custom'),
       };
 
       const result = await sunoClient.generate(payload);
@@ -150,6 +178,13 @@ export function registerGenerationTools(server, allTools) {
         lyrics: { type: 'string', description: 'Optional lyrics for the extension' },
         mv: { type: 'string', description: 'Model version', default: 'chirp-fenix' },
         tags: { type: 'string', description: 'Style tags for the extension' },
+        negative_tags: { type: 'string', description: 'Styles to avoid' },
+        instrumental: { type: 'boolean', description: 'Make instrumental' },
+        weirdness: { type: 'number', description: 'Weirdness 0-100' },
+        style_weight: { type: 'number', description: 'Style influence 0-100' },
+        audio_weight: { type: 'number', description: 'Audio influence 0-100' },
+        persona_id: { type: 'string', description: 'Persona ID for voice consistency' },
+        persona_model: { type: 'string', description: 'Persona model type (style_persona, voice_persona)' },
       },
       required: ['clip_id', 'continue_at'],
     }, async (args) => {
@@ -158,19 +193,17 @@ export function registerGenerationTools(server, allTools) {
         mv: args.mv || 'chirp-fenix',
         gpt_description_prompt: '',
         prompt: args.lyrics || '',
-        make_instrumental: false,
+        make_instrumental: args.instrumental || false,
         title: '',
         tags: args.tags || '',
+        negative_tags: args.negative_tags || '',
         generation_type: 'TEXT',
         continue_clip_id: args.clip_id,
         continue_at: args.continue_at,
         cover_clip_id: null,
         task: 'extend',
-        metadata: {
-          web_client_pathname: '/create',
-          create_mode: 'custom',
-          create_session_token: crypto.randomUUID(),
-        },
+        ...personaFields(args),
+        metadata: metadataWithSliders(args, 'custom'),
       };
 
       const result = await sunoClient.generate(payload);
@@ -216,6 +249,26 @@ export function registerGenerationTools(server, allTools) {
       return { content: [{ type: 'text', text: JSON.stringify(result.data, null, 2) }] };
     }),
 
+    tool('concat_songs', 'Concatenate/replace section of a song (used for add vocals, add instrumental, replace section)', {
+      type: 'object',
+      properties: {
+        clip_id: { type: 'string', description: 'ID of the source song clip' },
+        is_infill: { type: 'boolean', description: 'Whether this is an infill (replace section) operation', default: false },
+        edit_session_id: { type: 'string', description: 'Optional edit session ID for tracking' },
+      },
+      required: ['clip_id'],
+    }, async (args) => {
+      const body = {
+        clip_id: args.clip_id,
+        is_infill: args.is_infill || false,
+      };
+      if (args.edit_session_id) body.edit_session_id = args.edit_session_id;
+
+      const result = await sunoClient.POST('/api/generate/concat/v2/', { body });
+      if (!result.ok) throw new Error(result.error || 'Concat failed');
+      return { content: [{ type: 'text', text: JSON.stringify(result.data, null, 2) }] };
+    }),
+
     tool('remaster_song', 'Remaster/upsample a song to higher quality', {
       type: 'object',
       properties: {
@@ -258,6 +311,65 @@ export function registerGenerationTools(server, allTools) {
       return { content: [{ type: 'text', text: JSON.stringify(result.data, null, 2) }] };
     }),
 
+    tool('generate_lyrics', 'Generate lyrics from a description using AI', {
+      type: 'object',
+      properties: {
+        prompt: { type: 'string', description: 'Description of the lyrics you want (genre, theme, mood, etc.)' },
+        title: { type: 'string', description: 'Song title (optional)' },
+        style: { type: 'string', description: 'Music style/genre for the lyrics' },
+        lyrics_model: { type: 'string', description: 'Lyrics generation model (default, remi-v1)', default: 'default' },
+      },
+      required: ['prompt'],
+    }, async (args) => {
+      const body = {
+        prompt: args.prompt,
+        ...(args.title ? { title: args.title } : {}),
+        ...(args.style ? { tags: args.style } : {}),
+        lyrics_model: args.lyrics_model || 'default',
+      };
+      const result = await sunoClient.POST('/api/generate/cowrite-lyrics', { body });
+      if (!result.ok) throw new Error(result.error || 'Lyrics generation failed');
+      return { content: [{ type: 'text', text: JSON.stringify(result.data, null, 2) }] };
+    }),
+
+    tool('lyrics_infill', 'Infill/generate missing lyrics in a partially written lyric', {
+      type: 'object',
+      properties: {
+        lyrics: { type: 'string', description: 'Partial lyrics with [...] placeholders for sections to infill' },
+        style: { type: 'string', description: 'Music style context' },
+        lyrics_model: { type: 'string', description: 'Lyrics model (default, remi-v1)', default: 'default' },
+      },
+      required: ['lyrics'],
+    }, async (args) => {
+      const body = {
+        prompt: args.lyrics,
+        ...(args.style ? { tags: args.style } : {}),
+        lyrics_model: args.lyrics_model || 'default',
+      };
+      const result = await sunoClient.POST('/api/generate/lyrics-infill/', { body });
+      if (!result.ok) throw new Error(result.error || 'Lyrics infill failed');
+      return { content: [{ type: 'text', text: JSON.stringify(result.data, null, 2) }] };
+    }),
+
+    tool('lyrics_mashup', 'Mashup two sets of lyrics into one', {
+      type: 'object',
+      properties: {
+        lyrics_a: { type: 'string', description: 'First set of lyrics' },
+        lyrics_b: { type: 'string', description: 'Second set of lyrics' },
+      },
+      required: ['lyrics_a', 'lyrics_b'],
+    }, async (args) => {
+      const body = {
+        lyrics_a: args.lyrics_a,
+        lyrics_b: args.lyrics_b,
+        create_session_token: crypto.randomUUID(),
+        source: 'mcp',
+      };
+      const result = await sunoClient.POST('/api/generate/lyrics-mashup', { body });
+      if (!result.ok) throw new Error(result.error || 'Lyrics mashup failed');
+      return { content: [{ type: 'text', text: JSON.stringify(result.data, null, 2) }] };
+    }),
+
     tool('get_recommended_styles', 'Get recommended style tags for inspiration', {
       type: 'object',
       properties: {},
@@ -278,6 +390,8 @@ export function registerGenerationTools(server, allTools) {
       if (!result.ok) throw new Error(result.error || 'Tag upsample failed');
       return { content: [{ type: 'text', text: JSON.stringify(result.data, null, 2) }] };
     }),
+
+
   ];
 
   allTools.push(...tools);

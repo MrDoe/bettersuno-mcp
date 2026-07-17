@@ -132,6 +132,123 @@ export function registerMetadataTools(server, allTools) {
       if (!result.ok) throw new Error(result.error || 'Custom model creation failed');
       return { content: [{ type: 'text', text: JSON.stringify(result.data, null, 2) }] };
     }),
+
+    // --- Edit/Crop/Fade tools ---
+    tool('crop_clip', 'Crop a clip to a specific time range', {
+      type: 'object',
+      properties: {
+        clip_id: { type: 'string', description: 'Song clip ID' },
+        crop_start_s: { type: 'number', description: 'Start time in seconds' },
+        crop_end_s: { type: 'number', description: 'End time in seconds' },
+        title: { type: 'string', description: 'Title for the cropped clip' },
+        is_crop_remove: { type: 'boolean', description: 'Whether to remove the selected range instead of keeping it', default: false },
+      },
+      required: ['clip_id', 'crop_start_s', 'crop_end_s'],
+    }, async (args) => {
+      await assertOwned(args.clip_id);
+      const body = {
+        crop_start_s: args.crop_start_s,
+        crop_end_s: args.crop_end_s,
+        is_crop_remove: args.is_crop_remove || false,
+        title: args.title || '',
+        ui_surface: 'mcp',
+      };
+      const result = await sunoClient.POST(`/api/edit/crop/${encodeURIComponent(args.clip_id)}/`, { body });
+      if (!result.ok) throw new Error(result.error || 'Crop failed');
+      return { content: [{ type: 'text', text: JSON.stringify(result.data, null, 2) }] };
+    }),
+
+    tool('fade_clip', 'Add fade in/out to a clip', {
+      type: 'object',
+      properties: {
+        clip_id: { type: 'string', description: 'Song clip ID' },
+        fade_in_time: { type: 'number', description: 'Fade in duration in seconds' },
+        fade_out_time: { type: 'number', description: 'Fade out duration in seconds' },
+        title: { type: 'string', description: 'Title for the faded clip' },
+      },
+      required: ['clip_id'],
+    }, async (args) => {
+      await assertOwned(args.clip_id);
+      const body = {
+        fade_in_time: args.fade_in_time || 0,
+        fade_out_time: args.fade_out_time || 0,
+        title: args.title || '',
+      };
+      const result = await sunoClient.POST(`/api/edit/fade/${encodeURIComponent(args.clip_id)}/`, { body });
+      if (!result.ok) throw new Error(result.error || 'Fade failed');
+      return { content: [{ type: 'text', text: JSON.stringify(result.data, null, 2) }] };
+    }),
+
+    tool('reverse_clip', 'Reverse a clip\'s audio', {
+      type: 'object',
+      properties: {
+        clip_id: { type: 'string', description: 'Song clip ID to reverse' },
+      },
+      required: ['clip_id'],
+    }, async (args) => {
+      await assertOwned(args.clip_id);
+      const result = await sunoClient.POST('/api/clips/reverse-clip/', { body: { clip_id: args.clip_id } });
+      if (!result.ok) throw new Error(result.error || 'Reverse failed');
+      return { content: [{ type: 'text', text: JSON.stringify(result.data, null, 2) }] };
+    }),
+
+    tool('adjust_speed', 'Adjust the playback speed of a clip', {
+      type: 'object',
+      properties: {
+        clip_id: { type: 'string', description: 'Song clip ID' },
+        speed_multiplier: { type: 'number', description: 'Speed multiplier (e.g. 1.0 = normal, 1.5 = faster, 0.75 = slower)' },
+        keep_pitch: { type: 'boolean', description: 'Whether to preserve pitch', default: false },
+      },
+      required: ['clip_id'],
+    }, async (args) => {
+      await assertOwned(args.clip_id);
+      const body = {
+        clip_id: args.clip_id,
+        speed_multiplier: args.speed_multiplier || 1.0,
+        keep_pitch: args.keep_pitch || false,
+      };
+      const result = await sunoClient.POST('/api/clips/adjust-speed/', { body });
+      if (!result.ok) throw new Error(result.error || 'Speed adjustment failed');
+      return { content: [{ type: 'text', text: JSON.stringify(result.data, null, 2) }] };
+    }),
+
+    tool('set_clip_prompt', 'Set/edit the prompt metadata for a clip', {
+      type: 'object',
+      properties: {
+        clip_id: { type: 'string', description: 'Song clip ID' },
+        prompt: { type: 'string', description: 'New prompt text' },
+        title: { type: 'string', description: 'New title' },
+        tags: { type: 'string', description: 'New style tags' },
+        negative_tags: { type: 'string', description: 'New negative style tags' },
+      },
+      required: ['clip_id'],
+    }, async (args) => {
+      await assertOwned(args.clip_id);
+      const body = {};
+      if (args.prompt !== undefined) body.prompt = args.prompt;
+      if (args.title !== undefined) body.title = args.title;
+      if (args.tags !== undefined) body.tags = args.tags;
+      if (args.negative_tags !== undefined) body.negative_tags = args.negative_tags;
+      const result = await sunoClient.POST(`/api/gen/${encodeURIComponent(args.clip_id)}/set_clip_prompt/`, { body });
+      if (!result.ok) throw new Error(result.error || 'Failed to set clip prompt');
+      return { content: [{ type: 'text', text: JSON.stringify({ updated: true, clip_id: args.clip_id }, null, 2) }] };
+    }),
+
+    tool('set_clip_configurations', 'Set configurations for a clip (display tags, etc.)', {
+      type: 'object',
+      properties: {
+        clip_id: { type: 'string', description: 'Song clip ID' },
+        display_tags: { type: 'string', description: 'Display tags for the clip' },
+      },
+      required: ['clip_id'],
+    }, async (args) => {
+      await assertOwned(args.clip_id);
+      const body = {};
+      if (args.display_tags !== undefined) body.display_tags = args.display_tags;
+      const result = await sunoClient.POST(`/api/gen/${encodeURIComponent(args.clip_id)}/set_configurations/`, { body });
+      if (!result.ok) throw new Error(result.error || 'Failed to set configurations');
+      return { content: [{ type: 'text', text: JSON.stringify({ updated: true, clip_id: args.clip_id }, null, 2) }] };
+    }),
   ];
 
   allTools.push(...tools);

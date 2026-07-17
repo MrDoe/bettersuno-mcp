@@ -6,13 +6,13 @@ function tool(name, description, inputSchema, handler) {
 
 export function registerPersonaTools(server, allTools) {
   const tools = [
-    tool('create_persona', 'Create a voice persona from existing clips', {
+    tool('create_persona', 'Create a persona (style or voice) from existing clips', {
       type: 'object',
       properties: {
         name: { type: 'string', description: 'Persona name' },
-        description: { type: 'string', description: 'Persona description' },
         clip_ids: { type: 'array', items: { type: 'string' }, description: 'Array of clip IDs to base the persona on' },
-        is_voice_recording: { type: 'boolean', description: 'Whether this uses a voice recording' },
+        description: { type: 'string', description: 'Persona description' },
+        is_voice_recording: { type: 'boolean', description: 'Whether this uses a voice recording (creates a Vox/voice persona)', default: false },
       },
       required: ['name', 'clip_ids'],
     }, async (args) => {
@@ -27,7 +27,7 @@ export function registerPersonaTools(server, allTools) {
       return { content: [{ type: 'text', text: JSON.stringify(result.data, null, 2) }] };
     }),
 
-    tool('list_personas', 'List your own personas', {
+    tool('list_personas', 'List your own personas (both style and voice personas)', {
       type: 'object',
       properties: {},
     }, async () => {
