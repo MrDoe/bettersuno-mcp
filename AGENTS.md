@@ -63,3 +63,10 @@ New tools for advanced audio editing:
 - **Playback**: works for ANY song. MCP→WS→extension→suno tab player.
 - **Crop/fade/reverse/adjust-speed**: only work on owned clips (assertOwned gate).
 - **Concat**: currently no ownership gate — runs against any remixable clip.
+
+## Publishing
+- `npm version patch --no-git-tag-version && git tag v<version> && git push origin v<version>` — pushed tags trigger the `publish.yml` GitHub Actions workflow.
+- Package is published via **npm OIDC trusted publisher** (not a token). Configured on npmjs.com → package settings → Trusted Publisher.
+- **Critical**: the GHA runner ships with npm 10.x (bundled with Node 22). OIDC trusted publisher requires **npm 11.5.1+**, so the workflow upgrades npm before publishing.
+- Workflow file must match the filename registered on npmjs.com exactly (`publish.yml`).
+- `setup-node` with `registry-url` sets `NODE_AUTH_TOKEN` to a runner-internal value that has no npm publish permissions — npm 11+ handles this correctly by prioritizing OIDC auth.
