@@ -121,9 +121,19 @@ export function registerDownloadTools(server, allTools) {
       const audioUrl = getAudioUrlForFormat(song, requestedExt) || song.audio_url;
       if (!audioUrl) throw new Error('No audio URL available for this song');
 
-      const response = await fetch(audioUrl, {
+      let response = await fetch(audioUrl, {
         headers: { 'Authorization': `Bearer ${getToken()}` },
+        credentials: 'include',
       });
+
+      if (!response.ok && requestedExt === 'wav') {
+        const fallbackUrl = song.stream_audio_url || song.audio_url;
+        response = await fetch(fallbackUrl, {
+          headers: { 'Authorization': `Bearer ${getToken()}` },
+          credentials: 'include',
+        });
+      }
+
       if (!response.ok) throw new Error(`Download failed: HTTP ${response.status}`);
 
       const buffer = Buffer.from(await response.arrayBuffer());
