@@ -18,6 +18,67 @@ async function ensureDir(dir) {
   } catch {}
 }
 
+function getAudioUrlForFormat(song, format) {
+  if (!song || !song.audio_url) return null;
+  const requested = String(format || '').trim().toLowerCase();
+  const originalUrl = String(song.audio_url || '').trim();
+  if (!requested || !originalUrl) return originalUrl;
+
+  const urlCandidates = [
+    song.audio_url,
+    song.stream_audio_url,
+    song.song_path,
+    song.metadata?.audio_url,
+    song.metadata?.stream_audio_url,
+    song.metadata?.song_path,
+    song.meta?.audio_url,
+    song.meta?.stream_audio_url,
+    song.meta?.song_path,
+  ].filter(Boolean);
+
+  for (const candidate of urlCandidates) {
+    const normalized = String(candidate || '').toLowerCase();
+    if (requested === 'm4a' && normalized.includes('.m4a')) return candidate;
+    if (requested === 'wav' && normalized.includes('.wav')) return candidate;
+    if (requested === 'mp3' && normalized.includes('.mp3')) return candidate;
+  }
+
+  const queryIndex = originalUrl.indexOf('?');
+  const base = queryIndex >= 0 ? originalUrl.slice(0, queryIndex) : originalUrl;
+  const query = queryIndex >= 0 ? originalUrl.slice(queryIndex) : '';
+
+  const converted = base.replace(/\.([a-z0-9]{2,5})$/i, `.${requested}`);
+  if (converted !== base) {
+    return converted + query;
+  }
+
+  if (!/\bformat=/i.test(originalUrl)) {
+    return originalUrl + (originalUrl.includes('?') ? '&' : '?') + `format=${encodeURIComponent(requested)}`;
+  }
+
+  return originalUrl;
+}
+
+function inferAudioExtension(url, contentType, fallback) {
+  const normalizedType = String(contentType || '').toLowerCase();
+  if (normalizedType.includes('audio/wav') || normalizedType.includes('audio/x-wav') || normalizedType.includes('audio/wave')) return 'wav';
+  if (normalizedType.includes('audio/mpeg') || normalizedType.includes('audio/mp3')) return 'mp3';
+  if (normalizedType.includes('audio/mp4') || normalizedType.includes('audio/x-m4a')) return 'm4a';
+  if (normalizedType.includes('audio/ogg')) return 'ogg';
+
+  const normalizedUrl = String(url || '').split('?')[0].toLowerCase();
+  const match = normalizedUrl.match(/\.([a-z0-9]{2,5})$/);
+  if (match) return match[1];
+
+  return String(fallback || 'm4a').toLowerCase();
+}
+
+function replaceFilenameExtension(filename, ext) {
+  const clean = String(ext || '').trim().replace(/^\./, '').toLowerCase();
+  if (!clean) return filename;
+  return filename.replace(/\.[^./]+$/, `.${clean}`);
+}
+
 export function registerDownloadTools(server, allTools) {
   const tools = [
     tool('get_song_urls', 'Get all downloadable URLs for a song', {
@@ -39,7 +100,7 @@ export function registerDownloadTools(server, allTools) {
             video_url: s.video_url,
             video_cover_url: s.metadata?.video_cover_url,
             lyrics: s.metadata?.prompt || s.lyrics,
-            has_wav: !!s.metadata?.wav_file_url,
+            has_wav: !!getAudioUrlForFormat(s, 'wav'),
             owner_handle: s.user?.username || s.metadata?.user?.username,
           }, null, 2),
         }],
@@ -56,10 +117,8 @@ export function registerDownloadTools(server, allTools) {
       required: ['clip_id'],
     }, async (args) => {
       const song = await assertOwned(args.clip_id);
-      let audioUrl = song.audio_url;
-      if (args.format === 'wav' && song.metadata?.wav_file_url) {
-        audioUrl = song.metadata.wav_file_url;
-      }
+      const requestedExt = (args.format || 'm4a').toLowerCase();
+      const audioUrl = getAudioUrlForFormat(song, requestedExt) || song.audio_url;
       if (!audioUrl) throw new Error('No audio URL available for this song');
 
       const response = await fetch(audioUrl, {
@@ -68,15 +127,20 @@ export function registerDownloadTools(server, allTools) {
       if (!response.ok) throw new Error(`Download failed: HTTP ${response.status}`);
 
       const buffer = Buffer.from(await response.arrayBuffer());
+      const contentType = response.headers.get('content-type');
+      const actualExt = inferAudioExtension(response.url, contentType, requestedExt);
       const title = sanitizeFilename(song.title || `song_${args.clip_id.slice(-4)}`);
-      const ext = args.format === 'wav' ? 'wav' : 'm4a';
-      const filename = `${title}_${args.clip_id.slice(-4)}.${ext}`;
+      let filename = `${title}_${args.clip_id.slice(-4)}.${requestedExt}`;
+      if (actualExt !== requestedExt) {
+        filename = replaceFilenameExtension(filename, actualExt);
+      }
       const outputDir = args.output_dir ? resolve(args.output_dir) : process.cwd();
       await ensureDir(outputDir);
       const filePath = join(outputDir, filename);
       await writeFile(filePath, buffer);
 
-      return { content: [{ type: 'text', text: `Downloaded to ${filePath} (${buffer.length} bytes)` }] };
+      const note = actualExt !== requestedExt ? ` (Suno returned ${actualExt.toUpperCase()})` : '';
+      return { content: [{ type: 'text', text: `Downloaded to ${filePath} (${buffer.length} bytes${note})` }] };
     }),
 
     tool('download_lyrics', 'Download a song\'s lyrics as a text file', {

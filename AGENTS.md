@@ -68,6 +68,7 @@ New tools for advanced audio editing:
 - **429 retry**: exponential backoff 1s→30s, 5 retries. 401 → token auto-refreshed.
 - **Playback**: works for ANY song. MCP→WS→extension→suno tab player.
 - **Crop/fade/reverse/adjust-speed**: only work on owned clips (assertOwned gate).
+- **WAV downloads**: the `download_song` tool derives WAV URLs by replacing the extension on `audio_url` (Suno serves the same asset path with a different extension). The `inferAudioExtension` helper cross-checks the response `Content-Type` so the saved file extension always matches what Suno actually returned.
 - **Concat**: currently no ownership gate — runs against any remixable clip.
 
 ## Publishing
