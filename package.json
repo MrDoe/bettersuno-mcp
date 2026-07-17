@@ -1,6 +1,6 @@
 {
   "name": "bettersuno-mcp",
-  "version": "1.1.0",
+  "version": "1.1.2",
   "description": "MCP server for BetterSuno — exposes Suno API features to AI agents via the Model Context Protocol",
   "type": "module",
   "bin": {
@@ -9,8 +9,8 @@
   "scripts": {
     "start": "node src/index.js",
     "test": "node --test test/integration.test.js",
-    "publish:patch": "npm version patch --no-git-tag-version && npm publish",
-    "publish:minor": "npm version minor --no-git-tag-version && npm publish"
+    "publish:patch": "npm version patch --no-git-tag-version && git tag v$(node -p \"require('./package.json').version\") && git push origin v$(node -p \"require('./package.json').version\")",
+    "publish:minor": "npm version minor --no-git-tag-version && git tag v$(node -p \"require('./package.json').version\") && git push origin v$(node -p \"require('./package.json').version\")"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
