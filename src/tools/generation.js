@@ -19,7 +19,7 @@ function personaFields(args) {
   const f = {};
   if (args.persona_id) {
     f.persona_id = args.persona_id;
-    if (args.persona_model) f.persona_model = args.persona_model;
+    f.persona_model = args.persona_model || 'style_persona';
   }
   return f;
 }
@@ -50,7 +50,7 @@ export function registerGenerationTools(server, allTools) {
         style_weight: { type: 'number', description: 'Style influence 0-100' },
         audio_weight: { type: 'number', description: 'Audio influence 0-100' },
         persona_id: { type: 'string', description: 'Persona ID for voice consistency' },
-        persona_model: { type: 'string', description: 'Persona model type (style_persona, voice_persona)', default: 'style_persona' },
+        persona_model: { type: 'string', description: 'Persona model type (style_persona, voice_persona)' },
       },
       required: ['lyrics'],
     }, async (args) => {
