@@ -72,8 +72,10 @@ New tools for advanced audio editing:
 - **Concat**: currently no ownership gate — runs against any remixable clip.
 
 ## Publishing
-- `npm version patch --no-git-tag-version && git tag v<version> && git push origin v<version>` — pushed tags trigger the `publish.yml` GitHub Actions workflow.
-- Package is published via **npm OIDC trusted publisher** (not a token). Configured on npmjs.com → package settings → Trusted Publisher.
-- **Critical**: the GHA runner ships with npm 10.x (bundled with Node 22). OIDC trusted publisher requires **npm 11.5.1+**, so the workflow upgrades npm before publishing.
-- Workflow file must match the filename registered on npmjs.com exactly (`publish.yml`).
-- `setup-node` with `registry-url` sets `NODE_AUTH_TOKEN` to a runner-internal value that has no npm publish permissions — npm 11+ handles this correctly by prioritizing OIDC auth.
+- `npm run publish:patch` — bumps patch version, creates git tag, pushes tag (triggers GHA).
+- `npm run publish:minor` — same for minor version bump.
+- Internally runs: `npm version patch --no-git-tag-version && git tag v<version> && git push origin v<version>`.
+- Pushed tags trigger `.github/workflows/publish.yml` which publishes via **npm OIDC trusted publisher**.
+- Configured on npmjs.com → package settings → Trusted Publisher.
+- **Critical**: GHA runner ships npm 10.x (bundled with Node 22). OIDC trusted publisher requires **npm 11.5.1+**, so the workflow upgrades npm before publishing.
+- Workflow filename must match what's registered on npmjs.com (`publish.yml`).
