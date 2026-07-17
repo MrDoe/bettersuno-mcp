@@ -15,8 +15,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Publish to npm
-        run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ""
-          npm_config_registry: https://registry.npmjs.org/
+          registry-url: https://registry.npmjs.org
+      - name: Strip auth token from .npmrc so OIDC trusted publisher works
+        run: |
+          sed -i '/_authToken/d' "$NPM_CONFIG_USERCONFIG"
+          unset NODE_AUTH_TOKEN
+      - run: npm publish --access public
