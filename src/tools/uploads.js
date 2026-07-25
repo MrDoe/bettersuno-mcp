@@ -3,6 +3,8 @@ import { extname } from 'node:path';
 import { sunoClient } from '../suno-client.js';
 import { getToken } from '../ws-bridge.js';
 
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
 function tool(name, description, inputSchema, handler) {
   return { name, description, inputSchema, handler };
 }
@@ -19,7 +21,7 @@ async function uploadFileToS3(url, fields, fileBuffer, contentType) {
   }
 
   body += `--${boundary}\r\n`;
-  body += `Content-Disposition: form-data; name="file"; filename="upload${extname(url || '.bin')}"\r\n`;
+      body += `Content-Disposition: form-data; name="file"; filename="upload.${ext}"\r\n`;
   body += `Content-Type: ${contentType}\r\n\r\n`;
 
   const encoder = new TextEncoder();
@@ -52,7 +54,7 @@ export function registerUploadTools(server, allTools) {
         title: { type: 'string', description: 'Title for the uploaded clip' },
         upload_type: { type: 'string', description: 'Upload type (studio_file_upload, etc.)', default: 'studio_file_upload' },
         is_stem_mix: { type: 'boolean', description: 'Whether the file is a stem mix', default: false },
-        initialize_clip: { type: 'boolean', description: 'Whether to initialize a clip after upload', default: true },
+        initialize_clip: { type: 'boolean', description: 'Whether to initialize a clip after upload', default: false },
       },
       required: ['file_path'],
     }, async (args) => {
@@ -78,21 +80,69 @@ export function registerUploadTools(server, allTools) {
       });
       if (!finishResult.ok) throw new Error(finishResult.error || 'Upload finish failed');
 
-      // Step 4: Optionally initialize clip
-      if (args.initialize_clip) {
-        const clipResult = await sunoClient.POST(`/api/uploads/audio/${encodeURIComponent(uploadId)}/initialize-clip/`, {
-          body: { user_reviewed_tags: true },
-        });
-        if (!clipResult.ok) throw new Error(clipResult.error || 'Clip initialization failed');
+      // Step 4: Optionally initialize clip (default: false — fast path returns here)
+      if (args.initialize_clip === true) {
+        // Before creating the clip, snapshot existing upload-type clip IDs for diffing
+        let existingClipIds = new Set();
+        const snapshotResult = await sunoClient.POST('/api/feed/v3', { body: { limit: 50 } });
+        if (snapshotResult.ok) {
+          const clips = snapshotResult.data?.clips || [];
+          for (const c of clips) {
+            if (c.metadata?.type === 'upload') existingClipIds.add(c.id);
+          }
+        }
+
+        // Poll upload status until audio processing is done (needed before clip can be created)
+        for (let i = 0; i < 30; i++) {
+          const st = await sunoClient.GET(`/api/uploads/audio/${encodeURIComponent(uploadId)}/`);
+          if (st.ok && (st.data?.status === 'passed_audio_processing' || st.data?.status === 'complete')) break;
+          await sleep(2000);
+        }
+
+        // Try the initialize-clip endpoint (may return 400 — clips sometimes get created automatically)
+        let clipId = null;
+        let initError = null;
+        try {
+          const clipResult = await sunoClient.POST(`/api/uploads/audio/${encodeURIComponent(uploadId)}/initialize-clip/`, {
+            body: { user_reviewed_tags: true },
+          });
+          if (clipResult.ok) {
+            const d = clipResult.data;
+            clipId = d?.clip_id || d?.id || d?.clip?.id || d?.clips?.[0]?.id || null;
+          } else {
+            initError = `HTTP ${clipResult.status}`;
+          }
+        } catch (e) {
+          initError = e.message;
+        }
+
+        // If initialize-clip didn't return a clip_id, look for new clips in the feed
+        // (clips can be created automatically after audio processing completes)
+        if (!clipId) {
+          for (let i = 0; i < 15 && !clipId; i++) {
+            if (i > 0) await sleep(5000);
+            const feedResult = await sunoClient.POST('/api/feed/v3', { body: { limit: 50 } });
+            if (!feedResult.ok) continue;
+            const clips = feedResult.data?.clips || [];
+            for (const c of clips) {
+              if (c.metadata?.type === 'upload' && !existingClipIds.has(c.id)) {
+                clipId = c.id;
+                break;
+              }
+            }
+          }
+        }
 
         // Set title if provided
-        if (args.title && clipResult.data?.clip_id) {
-          await sunoClient.POST(`/api/gen/${encodeURIComponent(clipResult.data.clip_id)}/set_metadata/`, {
+        if (args.title && clipId) {
+          await sunoClient.POST(`/api/gen/${encodeURIComponent(clipId)}/set_metadata/`, {
             body: { title: args.title },
           }).catch(() => {}); // non-critical
         }
 
-        return { content: [{ type: 'text', text: JSON.stringify({ upload_id: uploadId, clip_id: clipResult.data?.clip_id, status: 'completed' }, null, 2) }] };
+        const response = { upload_id: uploadId, clip_id: clipId, status: 'completed' };
+        if (initError) response.initialize_clip_note = `initialize-clip returned ${initError}; clip discovered via feed`;
+        return { content: [{ type: 'text', text: JSON.stringify(response, null, 2) }] };
       }
 
       return { content: [{ type: 'text', text: JSON.stringify({ upload_id: uploadId, status: 'completed' }, null, 2) }] };
@@ -158,6 +208,81 @@ export function registerUploadTools(server, allTools) {
       if (!finishResult.ok) throw new Error(finishResult.error || 'Video upload finish failed');
 
       return { content: [{ type: 'text', text: JSON.stringify({ upload_id: uploadId, status: 'uploaded' }, null, 2) }] };
+    }),
+
+    tool('get_upload_status', 'Get the current processing status of an audio upload', {
+      type: 'object',
+      properties: {
+        upload_id: { type: 'string', description: 'Upload ID returned by upload_audio' },
+      },
+      required: ['upload_id'],
+    }, async (args) => {
+      const st = await sunoClient.GET(`/api/uploads/audio/${encodeURIComponent(args.upload_id)}/`);
+      if (!st.ok) throw new Error(st.error || 'Failed to get upload status');
+      return { content: [{ type: 'text', text: JSON.stringify(st.data, null, 2) }] };
+    }),
+
+    tool('initialize_upload_clip', 'Initialize a clip from a completed upload and find its clip ID', {
+      type: 'object',
+      properties: {
+        upload_id: { type: 'string', description: 'Upload ID returned by upload_audio' },
+        title: { type: 'string', description: 'Optional title to set on the resulting clip' },
+      },
+      required: ['upload_id'],
+    }, async (args) => {
+      // Snapshot existing upload-type clip IDs for diffing
+      let existingClipIds = new Set();
+      const snapshotResult = await sunoClient.POST('/api/feed/v3', { body: { limit: 50 } });
+      if (snapshotResult.ok) {
+        const clips = snapshotResult.data?.clips || [];
+        for (const c of clips) {
+          if (c.metadata?.type === 'upload') existingClipIds.add(c.id);
+        }
+      }
+
+      // Try the initialize-clip endpoint
+      let clipId = null;
+      let initError = null;
+      try {
+        const clipResult = await sunoClient.POST(`/api/uploads/audio/${encodeURIComponent(args.upload_id)}/initialize-clip/`, {
+          body: { user_reviewed_tags: true },
+        });
+        if (clipResult.ok) {
+          const d = clipResult.data;
+          clipId = d?.clip_id || d?.id || d?.clip?.id || d?.clips?.[0]?.id || null;
+        } else {
+          initError = `HTTP ${clipResult.status}`;
+        }
+      } catch (e) {
+        initError = e.message;
+      }
+
+      // If initialize-clip didn't return a clip_id, look for new clips in the feed
+      if (!clipId) {
+        for (let i = 0; i < 5 && !clipId; i++) {
+          if (i > 0) await sleep(3000);
+          const feedResult = await sunoClient.POST('/api/feed/v3', { body: { limit: 50 } });
+          if (!feedResult.ok) continue;
+          const clips = feedResult.data?.clips || [];
+          for (const c of clips) {
+            if (c.metadata?.type === 'upload' && !existingClipIds.has(c.id)) {
+              clipId = c.id;
+              break;
+            }
+          }
+        }
+      }
+
+      // Set title if provided
+      if (args.title && clipId) {
+        await sunoClient.POST(`/api/gen/${encodeURIComponent(clipId)}/set_metadata/`, {
+          body: { title: args.title },
+        }).catch(() => {});
+      }
+
+      const response = { upload_id: args.upload_id, clip_id: clipId, status: 'completed' };
+      if (initError) response.initialize_clip_note = `initialize-clip returned ${initError}; clip discovered via feed`;
+      return { content: [{ type: 'text', text: JSON.stringify(response, null, 2) }] };
     }),
   ];
 
