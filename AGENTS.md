@@ -81,6 +81,8 @@ Server **requires** the [BetterSuno extension](https://github.com/MrDoe/SunoNoti
 ## Script stem splitting & SFX sourcing
 Workflow used for `2138/log_from_year_2138_track_21_level_five_protocol/` (a Suno vocal-stem production). Generalizable to any drama script.
 
+> **Use the `audio-drama-production` skill** for the end-to-end pipeline (split script → source SFX → map personas → generate per-character tracks → extract vocal stems → download WAV). Load it whenever the user asks to turn a drama script into audio. The sections below are the condensed reference; the skill holds the full workflow + recipes.
+
 ### Splitting a script into vocal stems
 - Each speaker gets one file named by speaker (e.g. `Female_Mara.md`, `AI_CLIO.md`), containing only their lines in script order, cue markers preserved verbatim. **Never alter dialogue text.**
 - No stem file for `[MUSIC]` or `[SFX]` cues.
