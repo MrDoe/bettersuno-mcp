@@ -15,11 +15,22 @@ function buildControlSliders(args) {
   return { controlSliders, canControl };
 }
 
-function personaFields(args) {
+// Suno's web client never sends a `persona_model` field; the backend only links
+// a clip to its persona (and the GUI shows the voice chip) when the generation
+// payload carries the correct `task`. Voice (Vox) personas use `vox` /
+// `vox_cover` / `vox_extend`, style personas use `artist_consistency` /
+// `artist_cover` / `artist_extend`.
+const PERSONA_TASK = {
+  vox: { create: 'vox', cover: 'vox_cover', extend: 'vox_extend' },
+  style: { create: 'artist_consistency', cover: 'artist_cover', extend: 'artist_extend' },
+};
+
+function personaFields(args, operation = 'create') {
   const f = {};
   if (args.persona_id) {
     f.persona_id = args.persona_id;
-    f.persona_model = args.persona_model || 'style_persona';
+    const variant = args.persona_model === 'style_persona' ? 'style' : 'vox';
+    f.task = PERSONA_TASK[variant][operation];
   }
   return f;
 }
@@ -50,7 +61,7 @@ export function registerGenerationTools(server, allTools) {
         style_weight: { type: 'number', description: 'Style influence 0-100' },
         audio_weight: { type: 'number', description: 'Audio influence 0-100' },
         persona_id: { type: 'string', description: 'Persona ID for voice consistency' },
-        persona_model: { type: 'string', description: 'Persona model type (style_persona, voice_persona)' },
+        persona_model: { type: 'string', description: 'Persona model type (voice_persona for Vox/voice, style_persona for style)', default: 'voice_persona' },
       },
       required: ['lyrics'],
     }, async (args) => {
@@ -67,7 +78,7 @@ export function registerGenerationTools(server, allTools) {
         continue_clip_id: null,
         task: null,
         params: {},
-        ...personaFields(args),
+        ...personaFields(args, 'create'),
         metadata: metadataWithSliders(args, 'custom'),
       };
 
@@ -95,7 +106,7 @@ export function registerGenerationTools(server, allTools) {
         style_weight: { type: 'number', description: 'Style influence 0-100' },
         audio_weight: { type: 'number', description: 'Audio influence 0-100' },
         persona_id: { type: 'string', description: 'Persona ID for voice consistency' },
-        persona_model: { type: 'string', description: 'Persona model type (style_persona, voice_persona)' },
+        persona_model: { type: 'string', description: 'Persona model type (voice_persona for Vox/voice, style_persona for style)', default: 'voice_persona' },
       },
       required: ['description'],
     }, async (args) => {
@@ -112,7 +123,7 @@ export function registerGenerationTools(server, allTools) {
         continue_clip_id: null,
         task: null,
         params: {},
-        ...personaFields(args),
+        ...personaFields(args, 'create'),
         metadata: metadataWithSliders(args, 'inspiration'),
       };
 
@@ -143,7 +154,7 @@ export function registerGenerationTools(server, allTools) {
         style_weight: { type: 'number', description: 'Style influence 0-100' },
         audio_weight: { type: 'number', description: 'Audio influence 0-100' },
         persona_id: { type: 'string', description: 'Persona ID for voice consistency' },
-        persona_model: { type: 'string', description: 'Persona model type (style_persona, voice_persona)' },
+        persona_model: { type: 'string', description: 'Persona model type (voice_persona for Vox/voice, style_persona for style)', default: 'voice_persona' },
       },
       required: ['clip_id'],
     }, async (args) => {
@@ -164,7 +175,7 @@ export function registerGenerationTools(server, allTools) {
         continue_clip_id: null,
         task: 'cover',
         params: {},
-        ...personaFields(args),
+        ...personaFields(args, 'cover'),
         metadata: metadataWithSliders(args, 'custom'),
       };
 
@@ -187,7 +198,7 @@ export function registerGenerationTools(server, allTools) {
         style_weight: { type: 'number', description: 'Style influence 0-100' },
         audio_weight: { type: 'number', description: 'Audio influence 0-100' },
         persona_id: { type: 'string', description: 'Persona ID for voice consistency' },
-        persona_model: { type: 'string', description: 'Persona model type (style_persona, voice_persona)' },
+        persona_model: { type: 'string', description: 'Persona model type (voice_persona for Vox/voice, style_persona for style)', default: 'voice_persona' },
       },
       required: ['clip_id', 'continue_at'],
     }, async (args) => {
@@ -206,7 +217,7 @@ export function registerGenerationTools(server, allTools) {
         cover_clip_id: null,
         task: 'extend',
         params: {},
-        ...personaFields(args),
+        ...personaFields(args, 'extend'),
         metadata: metadataWithSliders(args, 'custom'),
       };
 

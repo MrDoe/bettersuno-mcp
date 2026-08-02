@@ -743,6 +743,91 @@ describe('MCP Server — create_song payload construction', () => {
     assert.ok(mockApi.requests[1].body.metadata.create_session_token, 'create_session_token should be a UUID');
   });
 
+  test('create_song with voice persona sends task=vox and no persona_model', async () => {
+    mockApi.setResponse('/api/c/check', { status: 200, body: { required: false, captcha_version: 1 } });
+    mockApi.setResponse('/api/generate/v2-web/', { status: 200, body: { clips: [] } });
+    mockApi.requests.length = 0;
+
+    await client.callTool('create_song', {
+      lyrics: 'test',
+      persona_id: 'persona-vox-1',
+    });
+
+    const genBody = mockApi.requests[1].body;
+    assert.equal(genBody.persona_id, 'persona-vox-1');
+    assert.equal(genBody.task, 'vox');
+    assert.equal(genBody.persona_model, undefined);
+  });
+
+  test('create_song with style persona sends task=artist_consistency', async () => {
+    mockApi.setResponse('/api/c/check', { status: 200, body: { required: false, captcha_version: 1 } });
+    mockApi.setResponse('/api/generate/v2-web/', { status: 200, body: { clips: [] } });
+    mockApi.requests.length = 0;
+
+    await client.callTool('create_song', {
+      lyrics: 'test',
+      persona_id: 'persona-style-1',
+      persona_model: 'style_persona',
+    });
+
+    const genBody = mockApi.requests[1].body;
+    assert.equal(genBody.persona_id, 'persona-style-1');
+    assert.equal(genBody.task, 'artist_consistency');
+    assert.equal(genBody.persona_model, undefined);
+  });
+
+  test('cover_song with voice persona sends task=vox_cover', async () => {
+    mockApi.setResponse('/api/user/me', {
+      status: 200,
+      body: { user_id: 'me-123', handle: 'me' },
+    });
+    mockApi.setResponse('/api/clip/source-clip-persona', {
+      status: 200,
+      body: { id: 'source-clip-persona', user_id: 'me-123', title: 'Original' },
+    });
+    mockApi.setResponse('/api/c/check', { status: 200, body: { required: false, captcha_version: 1 } });
+    mockApi.setResponse('/api/generate/v2-web/', { status: 200, body: { clips: [] } });
+    mockApi.requests.length = 0;
+
+    await client.callTool('cover_song', {
+      clip_id: 'source-clip-persona',
+      persona_id: 'persona-vox-2',
+    });
+
+    const genReq = mockApi.requests.find(r => r.path === '/api/generate/v2-web/');
+    const genBody = genReq.body;
+    assert.equal(genBody.cover_clip_id, 'source-clip-persona');
+    assert.equal(genBody.persona_id, 'persona-vox-2');
+    assert.equal(genBody.task, 'vox_cover');
+  });
+
+  test('extend_song with style persona sends task=artist_extend', async () => {
+    mockApi.setResponse('/api/user/me', {
+      status: 200,
+      body: { user_id: 'me-123', handle: 'me' },
+    });
+    mockApi.setResponse('/api/clip/source-clip-persona-2', {
+      status: 200,
+      body: { id: 'source-clip-persona-2', user_id: 'me-123', title: 'Original' },
+    });
+    mockApi.setResponse('/api/c/check', { status: 200, body: { required: false, captcha_version: 1 } });
+    mockApi.setResponse('/api/generate/v2-web/', { status: 200, body: { clips: [] } });
+    mockApi.requests.length = 0;
+
+    await client.callTool('extend_song', {
+      clip_id: 'source-clip-persona-2',
+      continue_at: 30,
+      persona_id: 'persona-style-2',
+      persona_model: 'style_persona',
+    });
+
+    const genReq = mockApi.requests.find(r => r.path === '/api/generate/v2-web/');
+    const genBody = genReq.body;
+    assert.equal(genBody.continue_clip_id, 'source-clip-persona-2');
+    assert.equal(genBody.persona_id, 'persona-style-2');
+    assert.equal(genBody.task, 'artist_extend');
+  });
+
   test('create_song with weirdness converts 0-100 to 0.0-1.0', async () => {
     mockApi.setResponse('/api/c/check', { status: 200, body: { required: false, captcha_version: 1 } });
     mockApi.setResponse('/api/generate/v2-web/', { status: 200, body: { clips: [] } });
@@ -797,11 +882,8 @@ describe('MCP Server — create_song payload construction', () => {
       end_s: 30,
     });
 
-    // requests[0]: GET /api/clip/source-clip-1 (assertCanCover: fetchClip)
-    // requests[1]: GET /api/user/me (assertCanCover: getCurrentUser)
-    // requests[2]: POST /api/c/check (captcha)
-    // requests[3]: POST /api/generate/v2-web/
-    const genBody = mockApi.requests[3].body;
+    const genReq = mockApi.requests.find(r => r.path === '/api/generate/v2-web/');
+    const genBody = genReq.body;
     assert.equal(genBody.cover_clip_id, 'source-clip-1');
     assert.equal(genBody.cover_start_s, 10);
     assert.equal(genBody.cover_end_s, 30);
@@ -827,10 +909,8 @@ describe('MCP Server — create_song payload construction', () => {
       lyrics: 'more lyrics here',
     });
 
-    // requests[0]: GET /api/clip/source-clip-2 (assertCanCover: fetchClip)
-    // requests[1]: POST /api/c/check (captcha)
-    // requests[2]: POST /api/generate/v2-web/ (_currentUser cached from previous test)
-    const genBody = mockApi.requests[2].body;
+    const genReq = mockApi.requests.find(r => r.path === '/api/generate/v2-web/');
+    const genBody = genReq.body;
     assert.equal(genBody.continue_clip_id, 'source-clip-2');
     assert.equal(genBody.continue_at, 45.5);
     assert.equal(genBody.prompt, 'more lyrics here');
