@@ -104,6 +104,14 @@ Workflow used for `2138/log_from_year_2138_track_21_level_five_protocol/` (a Sun
 - Pixabay detail-page navigation via `navigate_page`/JS `.click()` often times out but the search page loads fine; cookie-consent overlay must be dismissed (`Allow All`) before results render.
 - FxA/Sync `NS_ERROR_UNKNOWN_HOST` errors in the log are harmless (offline profile).
 
+### Creating an Ardour session from vocal stems
+- **`scripts/create-ardour-project.mjs`** builds a new Ardour project from vocal-stem WAVs with a 3D-audio chain cloned from a working template:
+  `stem tracks → Ambisonic bus (16ch, SPARTA AmbiRoomSim) → Headphones bus (16ch, SPARTA AmbiBIN) → Master (2ch)`.
+- Usage: `node scripts/create-ardour-project.mjs --stems <dir> --name "Level Five Protocol"` (default output = `./<name>/`; use `--out <dir>` to place elsewhere).
+- Default `--pattern '( - Vocals|_final)'` keeps only cleaned vocal stems from a stems folder; override with `--pattern <regex>` (e.g. `--pattern '.'` for all audio).
+- Mechanics: `ardour8-new_session` (headless) creates a valid base session; template routes for Headphones/Ambisonic/Audio-track are extracted verbatim from `/home/christoph/Ardour/3d audio/3d audio.ardour`, renumbered, and wired (each stem → `Ambisonic/audio_in N`). Stems are split to mono `%L/%R` into `interchange/<name>/audiofiles/`.
+- Validation: the generated session is XML-well-formed and Ardour opens/re-saves it without session errors (verify with a brief `timeout 25 ardour -n -O <session>` run; GUI/audio-backend noise is expected).
+
 ## Publishing
 - `npm run publish:patch` / `npm run publish:minor` — bumps version, creates git tag, pushes tag (triggers GHA publish workflow).
 - GHA runner ships npm 10.x with Node 22; workflow upgrades to npm 11.5.1+ for OIDC trusted publisher compatibility.
