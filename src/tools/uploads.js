@@ -9,7 +9,7 @@ function tool(name, description, inputSchema, handler) {
   return { name, description, inputSchema, handler };
 }
 
-async function uploadFileToS3(url, fields, fileBuffer, contentType) {
+async function uploadFileToS3(url, fields, fileBuffer, contentType, ext) {
   // Build multipart form data
   const boundary = '----FormBoundary' + Math.random().toString(36).slice(2);
   let body = '';
@@ -71,7 +71,7 @@ export function registerUploadTools(server, allTools) {
 
       // Step 2: Upload to S3
       const contentType = `audio/${ext === 'mp3' ? 'mpeg' : ext === 'wav' ? 'wav' : ext === 'm4a' ? 'mp4' : ext === 'flac' ? 'flac' : ext === 'ogg' ? 'ogg' : ext === 'aac' ? 'aac' : 'mpeg'}`;
-      await uploadFileToS3(s3Url, s3Fields, fileBuffer, contentType);
+      await uploadFileToS3(s3Url, s3Fields, fileBuffer, contentType, ext);
 
       // Step 3: Finish upload
       const filename = args.file_path.split('/').pop() || 'unknown';
@@ -166,7 +166,7 @@ export function registerUploadTools(server, allTools) {
       if (!uploadId || !s3Url) throw new Error('Invalid upload initiation response');
 
       const contentType = `image/${ext === 'jpg' || ext === 'jpeg' ? 'jpeg' : ext === 'png' ? 'png' : ext === 'webp' ? 'webp' : ext === 'gif' ? 'gif' : 'jpeg'}`;
-      await uploadFileToS3(s3Url, s3Fields, fileBuffer, contentType);
+      await uploadFileToS3(s3Url, s3Fields, fileBuffer, contentType, ext);
 
       const finishResult = await sunoClient.POST(`/api/uploads/image/${encodeURIComponent(uploadId)}/upload-finish/`);
       if (!finishResult.ok) throw new Error(finishResult.error || 'Image upload finish failed');
@@ -194,7 +194,7 @@ export function registerUploadTools(server, allTools) {
       if (!uploadId || !s3Url) throw new Error('Invalid upload initiation response');
 
       const contentType = `video/${ext === 'mp4' ? 'mp4' : ext === 'webm' ? 'webm' : ext === 'mov' ? 'quicktime' : 'mp4'}`;
-      await uploadFileToS3(s3Url, s3Fields, fileBuffer, contentType);
+      await uploadFileToS3(s3Url, s3Fields, fileBuffer, contentType, ext);
 
       const filename = args.file_path.split('/').pop() || 'unknown';
       const finishResult = await sunoClient.POST(`/api/uploads/video/${encodeURIComponent(uploadId)}/upload-finish/`, {

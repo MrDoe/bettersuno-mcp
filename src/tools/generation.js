@@ -66,6 +66,7 @@ export function registerGenerationTools(server, allTools) {
         continue_at: null,
         continue_clip_id: null,
         task: null,
+        params: {},
         ...personaFields(args),
         metadata: metadataWithSliders(args, 'custom'),
       };
@@ -110,6 +111,7 @@ export function registerGenerationTools(server, allTools) {
         continue_at: null,
         continue_clip_id: null,
         task: null,
+        params: {},
         ...personaFields(args),
         metadata: metadataWithSliders(args, 'inspiration'),
       };
@@ -161,6 +163,7 @@ export function registerGenerationTools(server, allTools) {
         continue_at: null,
         continue_clip_id: null,
         task: 'cover',
+        params: {},
         ...personaFields(args),
         metadata: metadataWithSliders(args, 'custom'),
       };
@@ -202,6 +205,7 @@ export function registerGenerationTools(server, allTools) {
         continue_at: args.continue_at,
         cover_clip_id: null,
         task: 'extend',
+        params: {},
         ...personaFields(args),
         metadata: metadataWithSliders(args, 'custom'),
       };
@@ -238,6 +242,7 @@ export function registerGenerationTools(server, allTools) {
         cover_clip_id: null,
         continue_clip_id: null,
         continue_at: null,
+        params: {},
         metadata: {
           web_client_pathname: '/create',
           create_mode: 'custom',

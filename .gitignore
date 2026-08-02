@@ -8,3 +8,7 @@ scripts/
 *.m4a
 *.flac
 *.mp3
+*.ogg
+*.m4a
+*.wav
+songs.txt

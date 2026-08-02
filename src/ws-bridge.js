@@ -1,5 +1,6 @@
 import { WebSocketServer } from 'ws';
 import { config } from './config.js';
+import { writeFileSync } from 'node:fs';
 
 let currentToken = null;
 let captchaResolve = null;
@@ -17,6 +18,16 @@ function startWsServer() {
   });
 
   wss.on('error', (err) => {
+    if (err.code === 'EADDRINUSE') {
+      console.error('');
+      console.error('[ws-bridge] FATAL: port ' + config.wsPort + ' is already in use by another bettersuno-mcp instance.');
+      console.error('[ws-bridge] Only ONE server can serve the extension over ws://127.0.0.1:' + config.wsPort + '.');
+      console.error('[ws-bridge] This usually means another opencode session spawned its own MCP server.');
+      console.error('[ws-bridge] Fix: kill stale instance(s) with:  pkill -f bettersuno-mcp');
+      console.error('[ws-bridge] Exiting — this instance would silently break extension tools otherwise.');
+      console.error('');
+      process.exit(1);
+    }
     console.error('[ws-bridge] WebSocket server error:', err.message);
   });
 
@@ -48,6 +59,7 @@ function startWsServer() {
         }
         if (msg.token) {
           currentToken = msg.token;
+          try { writeFileSync('/tmp/suno_token.txt', msg.token); } catch {}
           console.error('[ws-bridge] Token updated');
         }
         return;
@@ -115,7 +127,7 @@ export function requestFromExtension(action, payload = {}, timeoutMs = null) {
   const msg = { type: 'extension_request', requestId, action, payload };
   const sent = sendToExtension(msg);
   if (!sent) {
-    return Promise.reject(new Error('BetterSuno extension is not connected.'));
+    return Promise.reject(new Error('BetterSuno extension is not connected. If another opencode session holds ws://127.0.0.1:' + config.wsPort + ', kill it with: pkill -f bettersuno-mcp'));
   }
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
@@ -130,7 +142,7 @@ export function requestCaptcha() {
   return new Promise((resolve, reject) => {
     const sent = sendToExtension({ type: 'captcha_required' });
     if (!sent) {
-      return reject(new Error('BetterSuno extension is not connected.'));
+      return reject(new Error('BetterSuno extension is not connected. If another opencode session holds ws://127.0.0.1:' + config.wsPort + ', kill it with: pkill -f bettersuno-mcp'));
     }
     captchaResolve = resolve;
     captchaReject = reject;

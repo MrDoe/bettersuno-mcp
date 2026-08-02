@@ -79,6 +79,29 @@ function replaceFilenameExtension(filename, ext) {
   return filename.replace(/\.[^./]+$/, `.${clean}`);
 }
 
+function sleep(ms) {
+  return new Promise(r => setTimeout(r, ms));
+}
+
+// Suno serves true lossless/WAV via its download endpoint, not by rewriting
+// the CDN URL extension. It returns `{status:"processing"}` first and later
+// `{status:"ready", download_url}` (mirrors the suno.com web client).
+async function resolveSunoDownloadUrl(clipId, format) {
+  const path = `/api/download/clip/${encodeURIComponent(clipId)}?format=${encodeURIComponent(format)}`;
+  for (let attempt = 0; attempt < 20; attempt++) {
+    const result = await sunoClient.GET(path);
+    if (!result.ok) throw new Error(result.error || `Download URL request failed: HTTP ${result.status}`);
+    const data = result.data || {};
+    if (data.status === 'ready' && data.download_url) return data.download_url;
+    if (data.status === 'error') throw new Error(data.error || 'Suno download failed');
+    if (attempt >= 2 && (data.ok === false || data.status === 'not_available')) {
+      throw new Error(data.detail || data.error || 'Suno download not available');
+    }
+    await sleep(3000);
+  }
+  throw new Error('Timed out waiting for Suno download URL');
+}
+
 export function registerDownloadTools(server, allTools) {
   const tools = [
     tool('get_song_urls', 'Get all downloadable URLs for a song', {
@@ -100,7 +123,9 @@ export function registerDownloadTools(server, allTools) {
             video_url: s.video_url,
             video_cover_url: s.metadata?.video_cover_url,
             lyrics: s.metadata?.prompt || s.lyrics,
-            has_wav: !!getAudioUrlForFormat(s, 'wav'),
+            // WAV is served via GET /api/download/clip/{clip_id}?format=wav (returns
+            // a real .wav URL once ready), not by rewriting audio_url.
+            wav_via_download_endpoint: true,
             owner_handle: s.user?.username || s.metadata?.user?.username,
           }, null, 2),
         }],
@@ -118,7 +143,13 @@ export function registerDownloadTools(server, allTools) {
     }, async (args) => {
       const song = await assertOwned(args.clip_id);
       const requestedExt = (args.format || 'm4a').toLowerCase();
-      const audioUrl = getAudioUrlForFormat(song, requestedExt) || song.audio_url;
+
+      let audioUrl = null;
+      if (requestedExt === 'wav') {
+        audioUrl = await resolveSunoDownloadUrl(args.clip_id, 'wav');
+      } else {
+        audioUrl = getAudioUrlForFormat(song, requestedExt) || song.audio_url;
+      }
       if (!audioUrl) throw new Error('No audio URL available for this song');
 
       let response = await fetch(audioUrl, {
@@ -126,7 +157,7 @@ export function registerDownloadTools(server, allTools) {
         credentials: 'include',
       });
 
-      if (!response.ok && requestedExt === 'wav') {
+      if (!response.ok && requestedExt === 'm4a') {
         const fallbackUrl = song.stream_audio_url || song.audio_url;
         response = await fetch(fallbackUrl, {
           headers: { 'Authorization': `Bearer ${getToken()}` },

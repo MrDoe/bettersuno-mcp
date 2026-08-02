@@ -29,7 +29,7 @@ export function registerPlaybackTools(allTools) {
           start_time: typeof args.start_time === 'number' ? args.start_time : null,
         });
         if (!sent) {
-          throw new Error('BetterSuno extension is not connected (open suno.com with the extension loaded).');
+          throw new Error('BetterSuno extension is not connected (open suno.com with the extension loaded; if another opencode session holds ws://127.0.0.1:9423, run: pkill -f bettersuno-mcp)');
         }
         return {
           content: [
@@ -61,7 +61,7 @@ export function registerPlaybackTools(allTools) {
       async () => {
         const sent = sendToExtension({ type: 'stop_playback' });
         if (!sent) {
-          throw new Error('BetterSuno extension is not connected (open suno.com with the extension loaded).');
+          throw new Error('BetterSuno extension is not connected (open suno.com with the extension loaded; if another opencode session holds ws://127.0.0.1:9423, run: pkill -f bettersuno-mcp)');
         }
         return {
           content: [{ type: 'text', text: JSON.stringify({ stopped: true }, null, 2) }],

@@ -31,6 +31,8 @@ Server **requires** the [BetterSuno extension](https://github.com/MrDoe/SunoNoti
 ## Generation semantics
 - Pre-call `POST /api/c/check` with `{ctype:"generation"}`. If `required:true`, MCP sends `captcha_required` to extension and waits for `captcha_token` response.
 - `token:null, token_provider:null` required in generation payload (else 422).
+- **`params: {}` required** in `POST /api/generate/v2-web/` bodies (else 500/422 "We couldn't verify your request" / `token_validation_failed`). All generation payloads in `src/tools/generation.js` carry it; `suno-client.generate()` injects `params: payload.params ?? {}` as a safety net. (2026-08: Suno added this field.)
+- **Captcha sitekey**: Suno's generation Turnstile sitekey is `NEXT_PUBLIC_CLOUDFLARE_TURNSTILE_SITE_KEY_GEN` embedded in a `suno.com/_next/static/chunks/*.js` bundle (pattern `...SITE_KEY_GEN||"0x4AAAA..."`). Do NOT hardcode Cloudflare's test key (`0x4AAA...AAAQAAA`) — Suno rejects those tokens. The extension discovers the real key dynamically; see BetterSuno AGENTS.md.
 - Mode switch: `gpt_description_prompt` empty + `prompt` set → Custom mode (lyrics provided). `gpt_description_prompt` set + `prompt` empty → Inspiration mode (auto-lyrics).
 - Sliders: `metadata.control_sliders` (`weirdness_constraint`, `style_weight`, `audio_weight`, 0–1) + `metadata.can_control_sliders`. Input 0–100, converted to 0.0–1.0 internally.
 - **Core generation tools** (`create_song`, `inspire_song`, `cover_song`, `extend_song`) support `negative_tags`, control sliders, `persona_id` + `persona_model` (`"voice_persona"` for Vox, `"style_persona"` for style).
@@ -43,6 +45,7 @@ Server **requires** the [BetterSuno extension](https://github.com/MrDoe/SunoNoti
 - **Search**: uses `POST /api/search/` (GET returns 405). Filters results to only own songs via `/api/user/me`.
 - **Prompts**: stored in extension's IndexedDB; accessed via WS `extension_request`/`response` round-trip. Needs extension connected.
 - **Downloads**: `download_song` uses `inferAudioExtension` helper to check `Content-Type` and correct file extension when Suno returns a different format than requested.
+- **WAV downloads**: Suno does **not** serve WAV by rewriting the CDN URL (`.mp3`→`.wav` returns 403). Real WAV comes from `GET /api/download/clip/{clip_id}?format=wav`, which returns `{status:"processing"}` then `{status:"ready", download_url}` (poll ≈3s, ≤20 tries) — mirrors the suno.com web client. `download_song` uses this for `format:"wav"`; `m4a` still uses the CDN rewrite. The BetterSuno extension's batch download uses the same endpoint for WAV (`resolveSunoDownloadUrl`).
 - **Playback** (`play_song`/`stop_playback`): works for ANY song (no ownership gate). MCP→WS→extension→suno tab player.
 - **Edit tools** (`crop_clip`, `fade_clip`, `reverse_clip`, `adjust_speed`): only work on owned clips (`assertOwned`).
 - **Auth cache**: `getCurrentUser()` caches result in `_currentUser`. Tests that need fresh per-user state per call must account for this.
@@ -63,11 +66,41 @@ Server **requires** the [BetterSuno extension](https://github.com/MrDoe/SunoNoti
 - `initialize_upload_clip(upload_id, title?)` — calls initialize-clip endpoint + feed diff to find the resulting clip (bounded at 5×3s = 15s). Returns `{ clip_id }`.
 - **Agent workflow**: `upload_audio` → loop `get_upload_status` until `passed_audio_processing` → `initialize_upload_clip` → use `clip_id` for further operations.
 
+## Single-instance rule (WS bridge)
+- Only **one** bettersuno-mcp server can bind `ws://127.0.0.1:9423` at a time. The extension connects to whoever owns the port.
+- Every opencode session spawns its own MCP server; a second session's server will hit `EADDRINUSE` and now **exits with an actionable FATAL message** instead of silently serving broken tools.
+- If extension tools report "not connected", a stale instance almost certainly owns the port: `pkill -f bettersuno-mcp` (the running session's server is respawned by opencode on next tool use).
+- Avoid registering this server in both `opencode.json` and `opencode.jsonc` — one registration per session is enough.
+
 ## Lessons from the field
 - **firefox-devtools network capture is unreliable for file uploads**: `list_network_requests` often shows 0 requests despite page activity. S3 presigned-POST uploads (multipart form) may not appear as fetch/XHR requests in the observer.
 - **Library page layout**: The `+ Audio` button is in the top-right of the Library page next to the heading. The notifications panel can obscure it — it needs to be dismissed or the user needs to click it directly.
 - **Browser session is fragile** — each `navigate_page` call triggers a full SPA reload (Clerk auth, Cloudflare Turnstile, Stripe, etc.) which takes ~6s and resets UI state. Navigating to `suno.com/me` loads the Library but the notification panel stays open.
 - Google blocks sign-in in Firefox Marionette dev mode, making it impossible to re-authenticate a disrupted session from the terminal.
+
+## Script stem splitting & SFX sourcing
+Workflow used for `2138/log_from_year_2138_track_21_level_five_protocol/` (a Suno vocal-stem production). Generalizable to any drama script.
+
+### Splitting a script into vocal stems
+- Each speaker gets one file named by speaker (e.g. `Female_Mara.md`, `AI_CLIO.md`), containing only their lines in script order, cue markers preserved verbatim. **Never alter dialogue text.**
+- No stem file for `[MUSIC]` or `[SFX]` cues.
+- Verify the split with a script that compares dialogue lines (lines not starting with `[` or `===`) between the original and the concatenation of all stem files — must match exactly (missing=0, extra=0). See the Node one-liner used during the split.
+
+### Sourcing free sound effects (./sfx)
+- Match each `[SFX: ...]` cue to a free sound; one file can cover multiple similar cues.
+- **Wikimedia Commons** is the best direct-download source: search via `api.php?action=query&generator=search&gsrsearch=<terms>%20filetype:audio&gsrnamespace=6&prop=imageinfo&iiprop=url|size|mime`. Files are freely licensed with direct `upload.wikimedia.org` URLs.
+  - **Rate limits**: rapid queries/downloads hit 429. Space API calls ≥3s apart and file downloads ~15–35s apart. A 429 returns a small HTML page that silently saves as a bogus file — always `ffprobe`-verify downloaded files afterward.
+- **Archive.org** is a good fallback and doesn't rate-limit: `advancedsearch.php?q=identifier:freesound*<term>*&fl[]=identifier&fl[]=title&rows=...&output=json`, then metadata via `/metadata/<id>` and files at `/download/<id>/<filename>`. The `freesound_community-*` and `zapsplat_*` items are clean single-effect MP3s.
+- **Pixabay** (`pixabay.com/sound-effects/search/...`) is Cloudflare-protected: plain curl gets 403/"Just a moment", the CDN returns `AccessDenied`, and detail pages intermittently 503. Browsing works in the `firefox-devtools` MCP session, but result cards embed no direct audio URLs in the DOM, so it's not a reliable automated download source.
+- **SoundBible** tag pages carry little useful structure; skip.
+- Verify every download with `ffprobe` (duration) and keep the source's original extension (`.ogg`/`.wav`/`.mp3`). Use a descriptive `kebab-case` filename.
+- **Never delete downloaded files** — if a fetch produces a bad/stub file (e.g. a 429 error page), fetch the real audio to a *new* filename and leave the stub in place.
+
+### Starting a fresh Marionette browser session
+- The existing Firefox instance must be running with `--marionette --remote-debugging-port 9222` for the firefox-devtools MCP (`--connectExisting --marionettePort 2828`) to connect; without those flags the MCP times out.
+- To start one without disturbing an existing session: `firefox --new-instance --marionette --remote-debugging-port 9222 --profile <other-profile> about:blank` (use a profile that isn't locked by the running instance).
+- Pixabay detail-page navigation via `navigate_page`/JS `.click()` often times out but the search page loads fine; cookie-consent overlay must be dismissed (`Allow All`) before results render.
+- FxA/Sync `NS_ERROR_UNKNOWN_HOST` errors in the log are harmless (offline profile).
 
 ## Publishing
 - `npm run publish:patch` / `npm run publish:minor` — bumps version, creates git tag, pushes tag (triggers GHA publish workflow).

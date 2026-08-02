@@ -101,6 +101,7 @@ class SunoClient {
     const captcha = await this.ensureCaptcha();
     const fullPayload = {
       ...payload,
+      params: payload.params ?? {},
       token: captcha.token,
       token_provider: captcha.tokenProvider,
     };
