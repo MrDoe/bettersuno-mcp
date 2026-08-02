@@ -24,7 +24,7 @@ Generate a song from custom lyrics and style tags.
 | `style_weight` | number | No | Style influence 0–100 |
 | `audio_weight` | number | No | Audio influence 0–100 |
 | `persona_id` | string | No | Persona ID for voice consistency |
-| `persona_model` | string | No | Persona model type (`style_persona`, `voice_persona`) |
+| `persona_model` | string | No | `voice_persona` (Vox/voice, default) or `style_persona`. Controls the Suno `task` sent (`vox` vs `artist_consistency`); the raw field is **not** sent to Suno |
 
 ---
 
@@ -44,7 +44,7 @@ Generate a song from a description. Suno auto-writes the lyrics. Now supports al
 | `style_weight` | number | No | Style influence 0–100 |
 | `audio_weight` | number | No | Audio influence 0–100 |
 | `persona_id` | string | No | Persona ID for voice consistency |
-| `persona_model` | string | No | Persona model type |
+| `persona_model` | string | No | `voice_persona` (default) or `style_persona`; maps to Suno `task` (`vox` / `artist_consistency`), not sent raw |
 
 ---
 
@@ -67,7 +67,7 @@ Create a cover version of an existing song. Now supports custom lyrics, all slid
 | `style_weight` | number | No | Style influence 0–100 |
 | `audio_weight` | number | No | Audio influence 0–100 |
 | `persona_id` | string | No | Persona ID for voice consistency |
-| `persona_model` | string | No | Persona model type (`style_persona` / `voice_persona` for voice clones) |
+| `persona_model` | string | No | `voice_persona` (default) or `style_persona`; maps to Suno `task` (`vox_cover` / `artist_cover`), not sent raw |
 
 ---
 
@@ -88,7 +88,7 @@ Extend a song from a specific point. Now supports all style options and sliders.
 | `style_weight` | number | No | Style influence 0–100 |
 | `audio_weight` | number | No | Audio influence 0–100 |
 | `persona_id` | string | No | Persona ID for voice consistency |
-| `persona_model` | string | No | Persona model type |
+| `persona_model` | string | No | `voice_persona` (default) or `style_persona`; maps to Suno `task` (`vox_extend` / `artist_extend`), not sent raw |
 
 ---
 
