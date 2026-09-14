@@ -5,6 +5,10 @@ function sleep(ms) {
   return new Promise(r => setTimeout(r, ms));
 }
 
+// Generation throttle state (see _waitForGenerationSlot).
+let generationChain = Promise.resolve();
+let lastGenerationAt = 0;
+
 class SunoClient {
   async _fetch(path, { method = 'GET', body, params, signal, retries = config.maxRetries } = {}) {
     let url = `${config.apiBaseUrl}${path}`;
@@ -89,15 +93,40 @@ class SunoClient {
     const check = await this.captchaCheck();
     if (check.required) {
       console.error('[suno-client] captcha required, requesting from extension...');
-      const captchaToken = await requestCaptcha(check.captchaVersion);
-      console.error('[suno-client] captcha token received:', captchaToken ? captchaToken?.slice(0, 20) + '...' : 'NULL');
+      let captchaToken = null;
+      try {
+        captchaToken = await requestCaptcha(check.captchaVersion);
+      } catch (err) {
+        throw new Error(`Suno requires a Cloudflare Turnstile check that could not be solved automatically (${err.message}). Open https://suno.com/create in your Suno tab, tick the "Verify you are human" checkbox, then retry.`);
+      }
+      console.error('[suno-client] captcha token received:', captchaToken ? captchaToken.slice(0, 20) + '...' : 'NULL');
+      if (!captchaToken) {
+        throw new Error('Suno requires a Cloudflare Turnstile check and the extension returned no token. Tick the "Verify you are human" checkbox in your Suno tab, then retry.');
+      }
       return { token: captchaToken, tokenProvider: check.captchaVersion };
     }
     console.error('[suno-client] captcha not required (or check failed), using null token');
     return { token: null, tokenProvider: null };
   }
 
+  // Serialise generation submissions and keep a randomized minimum gap between
+  // them: bursts are what make Cloudflare escalate Turnstile to an interactive
+  // challenge. Interval 0 (tests) disables both.
+  async _waitForGenerationSlot() {
+    const interval = config.generationMinIntervalMs;
+    if (!interval || interval <= 0) return;
+    const run = generationChain.then(async () => {
+      const jitter = Math.floor(Math.random() * Math.min(5000, Math.floor(interval / 2)));
+      const wait = lastGenerationAt + interval + jitter - Date.now();
+      if (wait > 0) await sleep(wait);
+      lastGenerationAt = Date.now();
+    });
+    generationChain = run.catch(() => {});
+    return run;
+  }
+
   async generate(payload) {
+    await this._waitForGenerationSlot();
     const captcha = await this.ensureCaptcha();
     const fullPayload = {
       ...payload,

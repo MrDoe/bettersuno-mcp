@@ -74,7 +74,7 @@ function startWsServer() {
 
       if (msg.type === 'captcha_token') {
         if (captchaResolve) {
-          captchaResolve(msg.token);
+          captchaResolve(msg.token, msg.error);
           captchaResolve = null;
           captchaReject = null;
           clearTimeout(captchaTimer);
@@ -146,7 +146,10 @@ export function requestCaptcha(captchaVersion = null) {
     if (!sent) {
       return reject(new Error('BetterSuno extension is not connected. If another opencode session holds ws://127.0.0.1:' + config.wsPort + ', kill it with: pkill -f bettersuno-mcp'));
     }
-    captchaResolve = resolve;
+    captchaResolve = (token, error) => {
+      if (token) resolve(token);
+      else reject(new Error(error || 'The extension returned no captcha token'));
+    };
     captchaReject = reject;
     captchaTimer = setTimeout(() => {
       captchaResolve = null;

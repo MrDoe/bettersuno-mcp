@@ -13,6 +13,8 @@ The `bettersuno-mcp` server (this repository) exposes Suno features as MCP tools
 - **Single instance**: only one server can bind 9423. Killing it mid-session (`pkill -f 'bettersuno[-]mcp'`) makes the `bettersuno-mcp_*` tools disappear from the running session until opencode restarts.
 - **Token probe**: the server dumps the extension token to `/tmp/suno_token.txt`; use `node scripts/suno-api.mjs <METHOD> <path> [json|@file]` for raw API calls without MCP round-trips.
 - **Tests**: `npm test` in the repo (mocked API + crypto; sets `MCP_TOKEN_FILE=''` so it won't clobber the live token).
+- **Turnstile captchas — always ask the user**: when a generation fails with "We couldn't verify your request", or a tool error says the captcha could not be solved automatically, **stop retrying**. Cloudflare is serving an interactive challenge; the extension reuses Suno's own widget/token first and, if that fails, renders a visible widget in the Suno tab with a "tick the checkbox" hint. Ask the user to tick the "Verify you are human" box in their suno.com tab, then retry. Automated/remote-debugged browsers (`navigator.webdriver === true`) can never pass Turnstile, so don't try to solve it yourself.
+- **Generation throttle**: generation submissions are serialised with a randomized gap (`MCP_GENERATION_INTERVAL_MS`, default 20s) to avoid Cloudflare escalation — batches take longer on purpose; don't parallelize generation calls.
 - **Safety**: song/playlist/edit/workspace tools are ownership-gated. Never expose billing/payment/account-settings features; workspaces are the approved account-level mutation scope.
 
 ## Generation (create_song, inspire_song, cover_song, extend_song)
@@ -20,7 +22,7 @@ The `bettersuno-mcp` server (this repository) exposes Suno features as MCP tools
 - Models (`mv`, default `chirp-hawk`): `chirp-hawk` V6, `chirp-hawk-wild` V6-wild, `chirp-goose` V6-mini; legacy `chirp-fenix`/chirp-crow/chirp-bluejay/chirp-auk/chirp-v4/chirp-v3-5.
 - V6 options: `max_mode` (max-mode plan), `vocal_gender` (`m`/`f`), `duration` (10–360s), `variety` (0–4 → `aug_creativity`), `personalize` + `personalize_lyrics` (+ optional `personalize_user_uuid`). `personalize` auto-defaults variety to level 1.
 - Persona linkage uses `task`, not `persona_model`: Vox → `vox`/`vox_cover`/`vox_extend`; style → `artist_consistency`/`artist_cover`/`artist_extend`.
-- `params` is gone (do not re-add); `token:null`/`token_provider:null` required; captcha via `/api/c/check` (1=hCaptcha, 2=Turnstile — extension solves Turnstile only). `create_song`/`inspire_song` try WS relay first, then direct API.
+- `params` is gone (do not re-add); `token:null`/`token_provider:null` required; captcha via `/api/c/check` (1=hCaptcha, 2=Turnstile — extension solves Turnstile only). **When captcha is required/challenged, ask the user to solve it manually instead of retrying** (see Operating notes); `create_song`/`inspire_song` try WS relay first, then direct API.
 - Verify V6 options landed via `get_song`: `model_badges.songrow.display_name` (`V6`/`V6-WILD`/`V6-MINI`), `metadata.duration`, `metadata.control_sliders.aug_creativity`, `metadata.is_max_mode`.
 
 ## Downloads (download_song)
@@ -32,6 +34,7 @@ The `bettersuno-mcp` server (this repository) exposes Suno features as MCP tools
 ## Library, playlists, workspaces, edits
 
 - `list_library` filters: the public filter is `{public:"True"}` (NOT `is_public`). For audits use `get_library_stats` (`scope`, `max_songs`, `include_songs`) — reports per-model counts and the non-V6 song list.
+- `get_db_songs` / `get_library_stats {source:"db"}`: read the extension's cached library (`songsList` in IndexedDB; no API calls) with model version and played status. Populate it via the extension's **Fetch Songs** button; needs the extension active/connected.
 - `search_songs` (`library_song` search) is server-capped at 250 rows; paginating the library uses feed cursors instead.
 - Playlist mutations: `add_to_playlist`/`remove_from_playlist` (v2 tracks), `reorder_playlist` posts `{positions:[{clip_id,index}]}` (resolve `from_index` → clip id from the v1 playlist listing).
 - Workspaces: `create_workspace`, `add_songs_to_workspace`, `remove_songs_from_workspace`, `move_songs_to_workspace` (auto-detects source; library→workspace uses `add`, workspace→workspace uses `move`), reads via `list_projects`/`get_project`/`get_project_clips` (clips come from `GET /api/project/{id}` → `project_clips`).

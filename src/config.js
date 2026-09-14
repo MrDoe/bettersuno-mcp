@@ -6,7 +6,11 @@ export const config = {
   mangoBaseUrl: process.env.MCP_MANGO_BASE_URL || 'https://studio-api-prod.suno.com',
   maxRetries: 5,
   initialRetryDelayMs: 1000,
-  captchaTimeoutMs: 60000,
+  captchaTimeoutMs: parseInt(process.env.MCP_CAPTCHA_TIMEOUT_MS || '120000', 10),
+  // Minimum spacing between generation submissions. Bursty batches make
+  // Cloudflare escalate Turnstile to an interactive challenge, so serialise
+  // generation calls with a small randomized gap (0 disables, e.g. in tests).
+  generationMinIntervalMs: parseInt(process.env.MCP_GENERATION_INTERVAL_MS || '20000', 10),
   tokenRefreshTimeoutMs: 15000,
   // Comments expose other users' content; opt-in only.
   allowComments: process.env.MCP_ALLOW_COMMENTS === 'true',

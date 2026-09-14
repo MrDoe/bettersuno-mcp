@@ -82,6 +82,7 @@ async function startServer({ wsPort = 0, token = null } = {}) {
     ...process.env,
     MCP_WS_PORT: wsPort ? String(wsPort) : '0', // 0 = let OS pick (server will report the actual port)
     MCP_TOKEN_FILE: '', // don't clobber the live token dump
+    MCP_GENERATION_INTERVAL_MS: '0', // keep generation tests fast
   };
 
   const child = spawn('node', ['src/index.js'], {
@@ -332,6 +333,7 @@ describe('MCP Server — with mock token via WebSocket bridge', () => {
         MCP_API_BASE_URL: `http://localhost:${apiPort}`,
         MCP_MANGO_BASE_URL: `http://127.0.0.1:${apiPort}`,
         MCP_TOKEN_FILE: '',
+        MCP_GENERATION_INTERVAL_MS: '0',
       },
     });
     child.stderr.on('data', () => {});
@@ -944,6 +946,7 @@ describe('MCP Server — create_song payload construction', () => {
         MCP_API_BASE_URL: `http://localhost:${apiPort}`,
         MCP_MANGO_BASE_URL: `http://127.0.0.1:${apiPort}`,
         MCP_TOKEN_FILE: '',
+        MCP_GENERATION_INTERVAL_MS: '0',
       },
     });
     child.stderr.on('data', () => {});
@@ -1272,6 +1275,7 @@ describe('MCP Server — WebSocket bridge token refresh', () => {
         MCP_API_BASE_URL: `http://localhost:${apiPort}`,
         MCP_MANGO_BASE_URL: `http://127.0.0.1:${apiPort}`,
         MCP_TOKEN_FILE: '',
+        MCP_GENERATION_INTERVAL_MS: '0',
       },
     });
     child.stderr.on('data', () => {});
