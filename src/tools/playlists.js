@@ -82,14 +82,36 @@ export function registerPlaylistTools(server, allTools) {
         playlist_id: { type: 'string', description: 'Playlist ID' },
         from_index: { type: 'number', description: 'Current index of the track to move' },
         to_index: { type: 'number', description: 'Target index to move the track to' },
+        clip_id: { type: 'string', description: 'Clip ID to move (alternative to from_index)' },
       },
-      required: ['playlist_id', 'from_index', 'to_index'],
+      required: ['playlist_id', 'to_index'],
     }, async (args) => {
-      const result = await sunoClient.POST(`/api/playlist/v2/${encodeURIComponent(args.playlist_id)}/tracks/reorder-by-index`, {
-        body: { from_index: args.from_index, to_index: args.to_index },
+      const pid = encodeURIComponent(args.playlist_id);
+      let clipId = args.clip_id || null;
+
+      if (!clipId) {
+        if (typeof args.from_index !== 'number') {
+          throw new Error('Provide either clip_id or from_index');
+        }
+        // The current web client reorders by clip id (positions payload).
+        // Resolve the clip sitting at from_index via the v1 playlist endpoint
+        // (the v2 endpoint returns playlist metadata only).
+        const page = Math.floor(args.from_index / 50) + 1;
+        const pageSize = 50;
+        const result = await sunoClient.GET(`/api/playlist/${pid}?page=${page}&page_size=${pageSize}`);
+        if (!result.ok) throw new Error(result.error || 'Failed to load playlist tracks');
+        const clips = result.data?.playlist_clips || result.data?.playlist_songs || result.data?.songs || result.data?.clips || [];
+        const localIndex = args.from_index % pageSize;
+        const entry = clips[localIndex];
+        clipId = entry?.clip?.id || entry?.id || null;
+        if (!clipId) throw new Error(`No track found at index ${args.from_index}`);
+      }
+
+      const result = await sunoClient.POST(`/api/playlist/v2/${pid}/tracks/reorder-by-index`, {
+        body: { positions: [{ clip_id: clipId, index: args.to_index }] },
       });
       if (!result.ok) throw new Error(result.error || 'Failed to reorder playlist');
-      return { content: [{ type: 'text', text: JSON.stringify(result.data, null, 2) }] };
+      return { content: [{ type: 'text', text: JSON.stringify({ ...result.data, clip_id: clipId, index: args.to_index }, null, 2) }] };
     }),
 
     tool('delete_playlist', 'Delete/trash a playlist', {
@@ -183,9 +205,12 @@ export function registerPlaylistTools(server, allTools) {
       const pid = encodeURIComponent(args.playlist_id);
       const page = args.page || 1;
       const size = args.page_size || 50;
+      // NOTE (V6 API): /api/playlist/v2/{id} now returns playlist *metadata*
+      // (metadata/relationship/bio/stats) without tracks; the v1 endpoint still
+      // returns `playlist_clips` with the actual tracks.
       const candidates = [
-        `/api/playlist/v2/${pid}?page=${page}&page_size=${size}`,
         `/api/playlist/${pid}?page=${page}&page_size=${size}`,
+        `/api/playlist/v2/${pid}?page=${page}&page_size=${size}`,
         `/api/playlist/${pid}/clips?page=${page}&page_size=${size}`,
       ];
       const findClipArray = (data) => {

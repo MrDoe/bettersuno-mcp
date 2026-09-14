@@ -6,13 +6,61 @@ function tool(name, description, inputSchema, handler) {
   return { name, description, inputSchema, handler };
 }
 
+// `variety` maps to Suno's aug_creativity (V6-only): an integer level 0-4
+// (0=off, 1=normal, 2=high, 3=extra, 4=max) sent in metadata.control_sliders.
 function buildControlSliders(args) {
   const controlSliders = {};
   const canControl = [];
   if (args.weirdness !== undefined) { controlSliders.weirdness_constraint = args.weirdness / 100; canControl.push('weirdness_constraint'); }
   if (args.style_weight !== undefined) { controlSliders.style_weight = args.style_weight / 100; canControl.push('style_weight'); }
   if (args.audio_weight !== undefined) { controlSliders.audio_weight = args.audio_weight / 100; canControl.push('audio_weight'); }
+  // The web UI forces Variety on before Personalize; mirror that by defaulting
+  // aug_creativity to level 1 when personalization is requested without one.
+  const variety = args.variety !== undefined ? args.variety : (wantsPersonalization(args) ? 1 : undefined);
+  if (variety !== undefined) {
+    controlSliders.aug_creativity = Math.max(0, Math.min(4, Math.round(Number(variety) || 0)));
+    canControl.push('aug_creativity');
+  }
   return { controlSliders, canControl };
+}
+
+// Suno's V6 era model catalog (session.billingModels external_key / major_model_version):
+//   chirp-hawk      = v6     (default)
+//   chirp-hawk-wild = v6-wild
+//   chirp-goose     = v6-mini
+//   chirp-fenix     = v5.5
+const MODEL_HELP = 'Model version — V6 chirp-hawk (default), V6-wild chirp-hawk-wild, V6-mini chirp-goose, V5.5 chirp-fenix, V5 chirp-crow, V4.5+ chirp-bluejay, V4.5 chirp-auk, V4 chirp-v4, V3.5 chirp-v3-5';
+const DEFAULT_MV = 'chirp-hawk';
+
+function wantsPersonalization(args) {
+  return args.personalize === true || args.personalize_lyrics === true || !!args.personalize_user_uuid;
+}
+
+function maxModeField(args) {
+  return args.max_mode ? { is_max_mode: true } : {};
+}
+
+function vocalGenderField(args) {
+  if (args.vocal_gender !== 'm' && args.vocal_gender !== 'f') return {};
+  return { vocal_gender: args.vocal_gender };
+}
+
+// Top-level V6 generation fields: `duration` (song length in seconds, the
+// web client's slider range is 10-360 in 5s steps) and the "Personalize"
+// (Chameleon) flags `use_personalization`, `do_personalize_lyrics`,
+// `personalization_user_uuid`.
+function v6OptionFields(args) {
+  const f = {};
+  if (args.duration !== undefined && args.duration !== null) {
+    const seconds = Math.round(Number(args.duration));
+    if (Number.isFinite(seconds)) f.duration = Math.max(10, Math.min(360, seconds));
+  }
+  if (wantsPersonalization(args)) {
+    f.use_personalization = true;
+    if (args.personalize_user_uuid) f.personalization_user_uuid = args.personalize_user_uuid;
+    if (args.personalize_lyrics !== undefined) f.do_personalize_lyrics = !!args.personalize_lyrics;
+  }
+  return f;
 }
 
 // Suno's web client never sends a `persona_model` field; the backend only links
@@ -41,10 +89,28 @@ function metadataWithSliders(args, createMode) {
     web_client_pathname: '/create',
     create_mode: createMode || 'custom',
     create_session_token: crypto.randomUUID(),
+    ...maxModeField(args),
+    ...vocalGenderField(args),
     ...(Object.keys(controlSliders).length > 0 ? { control_sliders: controlSliders } : {}),
     ...(canControl.length > 0 ? { can_control_sliders: canControl } : {}),
   };
 }
+
+const MAX_MODE_PROP = { type: 'boolean', description: 'V6 Max Mode — generates the full-length, highest-quality take (requires a plan with max-mode access)' };
+const VOCAL_GENDER_PROP = { type: 'string', enum: ['m', 'f'], description: 'Vocal gender for generated vocals ("m" or "f"; omit to let Suno choose)' };
+const DURATION_PROP = { type: 'number', description: 'Target song duration in seconds (V6, 10-360; omit for model default/auto-length)' };
+const VARIETY_PROP = { type: 'number', description: 'V6 Variety (aug_creativity) level 0-4: 0=off, 1=normal, 2=high, 3=extra, 4=max' };
+const PERSONALIZE_PROP = { type: 'boolean', description: 'Enable V6 Personalize ("My Taste") — requires a Suno account with personalization data' };
+const PERSONALIZE_LYRICS_PROP = { type: 'boolean', description: 'Let Personalize also adapt the lyrics (do_personalize_lyrics)' };
+const PERSONALIZE_USER_PROP = { type: 'string', description: 'Optional target user UUID for Personalize (personalization_user_uuid)' };
+
+const V6_OPTION_PROPS = {
+  duration: DURATION_PROP,
+  variety: VARIETY_PROP,
+  personalize: PERSONALIZE_PROP,
+  personalize_lyrics: PERSONALIZE_LYRICS_PROP,
+  personalize_user_uuid: PERSONALIZE_USER_PROP,
+};
 
 export function registerGenerationTools(server, allTools) {
   const tools = [
@@ -56,17 +122,20 @@ export function registerGenerationTools(server, allTools) {
         tags: { type: 'string', description: 'Style/genre tags (e.g. "pop, upbeat, synth")' },
         negative_tags: { type: 'string', description: 'Styles to avoid' },
         instrumental: { type: 'boolean', description: 'Make instrumental (no vocals)' },
-        mv: { type: 'string', description: 'Model version (chirp-fenix, chirp-v4, chirp-v3-5)', default: 'chirp-fenix' },
+        mv: { type: 'string', description: MODEL_HELP, default: DEFAULT_MV },
         weirdness: { type: 'number', description: 'Weirdness 0-100' },
         style_weight: { type: 'number', description: 'Style influence 0-100' },
         audio_weight: { type: 'number', description: 'Audio influence 0-100' },
         persona_id: { type: 'string', description: 'Persona ID for voice consistency' },
         persona_model: { type: 'string', description: 'Persona model type (voice_persona for Vox/voice, style_persona for style)', default: 'voice_persona' },
+        max_mode: MAX_MODE_PROP,
+        vocal_gender: VOCAL_GENDER_PROP,
+        ...V6_OPTION_PROPS,
       },
       required: ['lyrics'],
     }, async (args) => {
       const payload = {
-        mv: args.mv || 'chirp-fenix',
+        mv: args.mv || DEFAULT_MV,
         gpt_description_prompt: '',
         prompt: args.lyrics,
         make_instrumental: args.instrumental || false,
@@ -77,8 +146,8 @@ export function registerGenerationTools(server, allTools) {
         continue_at: null,
         continue_clip_id: null,
         task: null,
-        params: {},
         ...personaFields(args, 'create'),
+        ...v6OptionFields(args),
         metadata: metadataWithSliders(args, 'custom'),
       };
 
@@ -99,7 +168,7 @@ export function registerGenerationTools(server, allTools) {
         description: { type: 'string', description: 'Style/description text (e.g. "a sad ballad about losing a pet")' },
         title: { type: 'string', description: 'Song title' },
         instrumental: { type: 'boolean', description: 'Make instrumental' },
-        mv: { type: 'string', description: 'Model version', default: 'chirp-fenix' },
+        mv: { type: 'string', description: MODEL_HELP, default: DEFAULT_MV },
         tags: { type: 'string', description: 'Additional style tags' },
         negative_tags: { type: 'string', description: 'Styles to avoid' },
         weirdness: { type: 'number', description: 'Weirdness 0-100' },
@@ -107,11 +176,14 @@ export function registerGenerationTools(server, allTools) {
         audio_weight: { type: 'number', description: 'Audio influence 0-100' },
         persona_id: { type: 'string', description: 'Persona ID for voice consistency' },
         persona_model: { type: 'string', description: 'Persona model type (voice_persona for Vox/voice, style_persona for style)', default: 'voice_persona' },
+        max_mode: MAX_MODE_PROP,
+        vocal_gender: VOCAL_GENDER_PROP,
+        ...V6_OPTION_PROPS,
       },
       required: ['description'],
     }, async (args) => {
       const payload = {
-        mv: args.mv || 'chirp-fenix',
+        mv: args.mv || DEFAULT_MV,
         gpt_description_prompt: args.description,
         prompt: '',
         make_instrumental: args.instrumental || false,
@@ -122,8 +194,8 @@ export function registerGenerationTools(server, allTools) {
         continue_at: null,
         continue_clip_id: null,
         task: null,
-        params: {},
         ...personaFields(args, 'create'),
+        ...v6OptionFields(args),
         metadata: metadataWithSliders(args, 'inspiration'),
       };
 
@@ -148,19 +220,22 @@ export function registerGenerationTools(server, allTools) {
         negative_tags: { type: 'string', description: 'Styles to avoid' },
         start_s: { type: 'number', description: 'Start time in seconds (optional)' },
         end_s: { type: 'number', description: 'End time in seconds (optional)' },
-        mv: { type: 'string', description: 'Model version', default: 'chirp-fenix' },
+        mv: { type: 'string', description: MODEL_HELP, default: DEFAULT_MV },
         instrumental: { type: 'boolean', description: 'Make instrumental' },
         weirdness: { type: 'number', description: 'Weirdness 0-100' },
         style_weight: { type: 'number', description: 'Style influence 0-100' },
         audio_weight: { type: 'number', description: 'Audio influence 0-100' },
         persona_id: { type: 'string', description: 'Persona ID for voice consistency' },
         persona_model: { type: 'string', description: 'Persona model type (voice_persona for Vox/voice, style_persona for style)', default: 'voice_persona' },
+        max_mode: MAX_MODE_PROP,
+        vocal_gender: VOCAL_GENDER_PROP,
+        ...V6_OPTION_PROPS,
       },
       required: ['clip_id'],
     }, async (args) => {
       await assertCanCover(args.clip_id);
       const payload = {
-        mv: args.mv || 'chirp-fenix',
+        mv: args.mv || DEFAULT_MV,
         gpt_description_prompt: '',
         prompt: args.lyrics || '',
         make_instrumental: args.instrumental || false,
@@ -174,8 +249,8 @@ export function registerGenerationTools(server, allTools) {
         continue_at: null,
         continue_clip_id: null,
         task: 'cover',
-        params: {},
         ...personaFields(args, 'cover'),
+        ...v6OptionFields(args),
         metadata: metadataWithSliders(args, 'custom'),
       };
 
@@ -190,7 +265,7 @@ export function registerGenerationTools(server, allTools) {
         clip_id: { type: 'string', description: 'ID of the song to extend' },
         continue_at: { type: 'number', description: 'Time in seconds to extend from' },
         lyrics: { type: 'string', description: 'Optional lyrics for the extension' },
-        mv: { type: 'string', description: 'Model version', default: 'chirp-fenix' },
+        mv: { type: 'string', description: MODEL_HELP, default: DEFAULT_MV },
         tags: { type: 'string', description: 'Style tags for the extension' },
         negative_tags: { type: 'string', description: 'Styles to avoid' },
         instrumental: { type: 'boolean', description: 'Make instrumental' },
@@ -199,12 +274,15 @@ export function registerGenerationTools(server, allTools) {
         audio_weight: { type: 'number', description: 'Audio influence 0-100' },
         persona_id: { type: 'string', description: 'Persona ID for voice consistency' },
         persona_model: { type: 'string', description: 'Persona model type (voice_persona for Vox/voice, style_persona for style)', default: 'voice_persona' },
+        max_mode: MAX_MODE_PROP,
+        vocal_gender: VOCAL_GENDER_PROP,
+        ...V6_OPTION_PROPS,
       },
       required: ['clip_id', 'continue_at'],
     }, async (args) => {
       await assertCanCover(args.clip_id);
       const payload = {
-        mv: args.mv || 'chirp-fenix',
+        mv: args.mv || DEFAULT_MV,
         gpt_description_prompt: '',
         prompt: args.lyrics || '',
         make_instrumental: args.instrumental || false,
@@ -216,8 +294,8 @@ export function registerGenerationTools(server, allTools) {
         continue_at: args.continue_at,
         cover_clip_id: null,
         task: 'extend',
-        params: {},
         ...personaFields(args, 'extend'),
+        ...v6OptionFields(args),
         metadata: metadataWithSliders(args, 'custom'),
       };
 
@@ -232,7 +310,7 @@ export function registerGenerationTools(server, allTools) {
         clip_ids: { type: 'array', items: { type: 'string' }, description: 'Song clip IDs to blend (2 or more)' },
         title: { type: 'string', description: 'Mashup title' },
         tags: { type: 'string', description: 'Style tags for the mashup' },
-        mv: { type: 'string', description: 'Model version', default: 'chirp-fenix' },
+        mv: { type: 'string', description: MODEL_HELP, default: DEFAULT_MV },
       },
       required: ['clip_ids'],
     }, async (args) => {
@@ -241,7 +319,7 @@ export function registerGenerationTools(server, allTools) {
       }
       for (const id of args.clip_ids) await assertCanCover(id);
       const payload = {
-        mv: args.mv || 'chirp-fenix',
+        mv: args.mv || DEFAULT_MV,
         gpt_description_prompt: '',
         prompt: '',
         make_instrumental: false,
@@ -249,11 +327,10 @@ export function registerGenerationTools(server, allTools) {
         tags: args.tags || '',
         generation_type: 'TEXT',
         mashup_clip_ids: args.clip_ids,
-        task: 'mashup',
+        task: 'mashup_condition',
         cover_clip_id: null,
         continue_clip_id: null,
         continue_at: null,
-        params: {},
         metadata: {
           web_client_pathname: '/create',
           create_mode: 'custom',

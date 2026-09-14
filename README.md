@@ -19,6 +19,18 @@ npx bettersuno-mcp
 npm install -g bettersuno-mcp
 ```
 
+Installing the package — globally or into a project — automatically registers the MCP server in your opencode config: `~/.config/opencode/opencode.json[c]` for global installs, `./opencode.json[c]` for project installs. Set `BETTERSUNO_MCP_SKIP_SETUP=1` to opt out.
+
+npm 12+ blocks install scripts by default. Allow this package's setup script with `npm install -g --allow-scripts=bettersuno-mcp bettersuno-mcp`, or (in a project) `npm install-scripts approve bettersuno-mcp`. You can also register manually at any time:
+
+```bash
+npx bettersuno-mcp setup              # global config
+npx bettersuno-mcp setup --project    # current directory
+npx bettersuno-mcp setup --config /path/to/opencode.json
+```
+
+Restart opencode afterwards to load the server.
+
 ## Usage
 
 1. Have the BetterSuno extension loaded in a Chrome or Firefox browser with at least one open `suno.com` tab.
@@ -32,12 +44,15 @@ The server listens on `ws://127.0.0.1:9423` for the extension to connect and pus
 
 ### Register in your AI tool
 
-**opencode** (`~/.opencode/opencode.json`):
+**opencode** — registered automatically on install (see [Install](#install)). To set it up manually, add to `~/.config/opencode/opencode.json` (global) or `opencode.json` in your project:
 ```json
 {
-  "mcpServers": {
-    "bettersuno": {
-      "command": ["npx", "bettersuno-mcp"]
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "bettersuno-mcp": {
+      "type": "local",
+      "command": ["npx", "-y", "bettersuno-mcp"],
+      "enabled": true
     }
   }
 }
@@ -73,11 +88,11 @@ node /path/to/bettersuno-mcp/src/index.js
 
 ```
 ┌─────────────────────────────────────────┐
-│  AI Tool (opencoe/Claude/Cursor)        │
+│  AI Tool (opencode/Claude/Cursor)        │
 │  └─ MCP stdio ──► bettersuno-mcp (this) │
 │                                          │
 │  bettersuno-mcp                          │
-│  ├─ 59 tools / 12 modules                │
+│  ├─ 77 tools / 12 modules                │
 │  ├─ suno-client.js — HTTP to Suno API    │
 │  └─ ws-bridge.js — WS server on :9423   │
 └──────────────┬──────────────────────────┘

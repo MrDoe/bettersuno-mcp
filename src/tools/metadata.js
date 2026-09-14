@@ -5,6 +5,35 @@ function tool(name, description, inputSchema, handler) {
   return { name, description, inputSchema, handler };
 }
 
+function sleep(ms) {
+  return new Promise(r => setTimeout(r, ms));
+}
+
+// Suno's edit operations (crop/fade) are async workers: the POST returns
+// `{action_clip_id}` immediately and the result is materialized later.
+// The web client polls GET /api/edit/action/{action_clip_id}/ every 2s (max
+// 120s) until status "complete" (or "error"), then loads the resulting clip.
+async function waitForEditAction(actionClipId) {
+  const path = `/api/edit/action/${encodeURIComponent(actionClipId)}/`;
+  for (let attempt = 0; attempt < 60; attempt++) {
+    await sleep(2000);
+    const result = await sunoClient.GET(path);
+    if (!result.ok) continue;
+    const status = result.data?.status;
+    if (status === 'complete') {
+      const clip = await sunoClient.GET(`/api/clip/${encodeURIComponent(actionClipId)}`);
+      if (clip.ok && clip.data?.id) {
+        return { clip_id: clip.data.id, title: clip.data.title, status: clip.data.status, action_clip_id: actionClipId };
+      }
+      return { clip_id: actionClipId, status: 'complete', action_clip_id: actionClipId };
+    }
+    if (status === 'error') {
+      throw new Error(result.data?.error || 'Edit operation failed');
+    }
+  }
+  throw new Error('Timed out waiting for edit operation to complete');
+}
+
 export function registerMetadataTools(server, allTools) {
   const tools = [
     tool('delete_song', 'Permanently delete songs', {
@@ -155,7 +184,9 @@ export function registerMetadataTools(server, allTools) {
       };
       const result = await sunoClient.POST(`/api/edit/crop/${encodeURIComponent(args.clip_id)}/`, { body });
       if (!result.ok) throw new Error(result.error || 'Crop failed');
-      return { content: [{ type: 'text', text: JSON.stringify(result.data, null, 2) }] };
+      const actionClipId = result.data?.action_clip_id;
+      const final = actionClipId ? await waitForEditAction(actionClipId) : result.data;
+      return { content: [{ type: 'text', text: JSON.stringify(final, null, 2) }] };
     }),
 
     tool('fade_clip', 'Add fade in/out to a clip', {
@@ -176,7 +207,9 @@ export function registerMetadataTools(server, allTools) {
       };
       const result = await sunoClient.POST(`/api/edit/fade/${encodeURIComponent(args.clip_id)}/`, { body });
       if (!result.ok) throw new Error(result.error || 'Fade failed');
-      return { content: [{ type: 'text', text: JSON.stringify(result.data, null, 2) }] };
+      const actionClipId = result.data?.action_clip_id;
+      const final = actionClipId ? await waitForEditAction(actionClipId) : result.data;
+      return { content: [{ type: 'text', text: JSON.stringify(final, null, 2) }] };
     }),
 
     tool('reverse_clip', 'Reverse a clip\'s audio', {

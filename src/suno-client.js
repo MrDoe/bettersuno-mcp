@@ -89,7 +89,7 @@ class SunoClient {
     const check = await this.captchaCheck();
     if (check.required) {
       console.error('[suno-client] captcha required, requesting from extension...');
-      const captchaToken = await requestCaptcha();
+      const captchaToken = await requestCaptcha(check.captchaVersion);
       console.error('[suno-client] captcha token received:', captchaToken ? captchaToken?.slice(0, 20) + '...' : 'NULL');
       return { token: captchaToken, tokenProvider: check.captchaVersion };
     }
@@ -101,7 +101,6 @@ class SunoClient {
     const captcha = await this.ensureCaptcha();
     const fullPayload = {
       ...payload,
-      params: payload.params ?? {},
       token: captcha.token,
       token_provider: captcha.tokenProvider,
     };

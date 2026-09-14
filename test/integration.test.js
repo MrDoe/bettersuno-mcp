@@ -16,6 +16,8 @@ import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
+import { createCipheriv, createHash, randomBytes } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { WebSocketServer } from 'ws';
 
@@ -79,6 +81,7 @@ async function startServer({ wsPort = 0, token = null } = {}) {
   const env = {
     ...process.env,
     MCP_WS_PORT: wsPort ? String(wsPort) : '0', // 0 = let OS pick (server will report the actual port)
+    MCP_TOKEN_FILE: '', // don't clobber the live token dump
   };
 
   const child = spawn('node', ['src/index.js'], {
@@ -111,8 +114,8 @@ function createMockSunoApi() {
   const requests = [];
   const responses = new Map(); // path → { status, body }
 
-  function setResponse(path, { status = 200, body = {} } = {}) {
-    responses.set(path, { status, body });
+  function setResponse(path, { status = 200, body = {}, contentType = 'application/json' } = {}) {
+    responses.set(path, { status, body, contentType });
   }
 
   const server = createServer((req, res) => {
@@ -130,8 +133,10 @@ function createMockSunoApi() {
 
       const matched = responses.get(entry.path) || responses.get('*');
       if (matched) {
-        res.writeHead(matched.status, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(matched.body));
+        const body = typeof matched.body === 'function' ? matched.body(entry) : matched.body;
+        res.writeHead(matched.status, { 'Content-Type': matched.contentType });
+        if (Buffer.isBuffer(body)) res.end(body);
+        else res.end(JSON.stringify(body));
       } else {
         res.writeHead(404, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ detail: 'Not found' }));
@@ -151,6 +156,7 @@ const EXPECTED_TOOLS = [
   // library
   'list_library', 'get_song', 'get_songs_by_ids', 'search_songs',
   'search_users', 'get_profile', 'get_current_user', 'get_user_session',
+  'get_library_stats', 'get_db_songs',
   // downloads
   'get_song_urls', 'download_song', 'download_lyrics', 'download_cover_image',
   // personas
@@ -164,6 +170,7 @@ const EXPECTED_TOOLS = [
   'remove_from_playlist', 'reorder_playlist', 'delete_playlist', 'update_playlist_metadata',
   // workspaces
   'list_projects', 'get_project', 'get_project_clips',
+  'create_workspace', 'add_songs_to_workspace', 'remove_songs_from_workspace', 'move_songs_to_workspace',
   // metadata
   'delete_song', 'trash_song', 'set_visibility', 'like_song',
   'update_song_metadata', 'generate_video', 'create_custom_model',
@@ -194,7 +201,7 @@ describe('MCP Server — startup & protocol', () => {
   test('tools/list returns all tools', async () => {
     const result = await client.listTools();
     const names = result.tools.map(t => t.name);
-    assert.equal(result.tools.length, 72, 'Expected 72 tools');
+    assert.equal(result.tools.length, 78, 'Expected 78 tools');
     for (const expected of EXPECTED_TOOLS) {
       assert.ok(names.includes(expected), `Missing tool: ${expected}`);
     }
@@ -323,6 +330,8 @@ describe('MCP Server — with mock token via WebSocket bridge', () => {
         ...process.env,
         MCP_WS_PORT: String(wsPort),
         MCP_API_BASE_URL: `http://localhost:${apiPort}`,
+        MCP_MANGO_BASE_URL: `http://127.0.0.1:${apiPort}`,
+        MCP_TOKEN_FILE: '',
       },
     });
     child.stderr.on('data', () => {});
@@ -401,6 +410,60 @@ describe('MCP Server — with mock token via WebSocket bridge', () => {
     assert.equal(mockApi.requests[0].body.limit, 10);
   });
 
+  test('list_library public_only uses the V6 `public` feed filter', async () => {
+    mockApi.setResponse('/api/feed/v3', {
+      status: 200,
+      body: { clips: [], next_cursor: null },
+    });
+    mockApi.requests.length = 0;
+
+    await client.callTool('list_library', { public_only: true });
+
+    assert.equal(mockApi.requests[0].body.filters.public, 'True');
+    assert.equal(mockApi.requests[0].body.filters.is_public, undefined);
+  });
+
+  test('get_library_stats paginates and reports V6 coverage', async () => {
+    mockApi.setResponse('/api/feed/v3', {
+      status: 200,
+      body: (entry) => {
+        const cursor = entry.body?.cursor;
+        if (!cursor) {
+          return {
+            clips: [
+              { id: 's1', title: 'New V6', model_name: 'chirp-hawk', major_model_version: 'v6', is_public: true },
+              { id: 's2', title: 'Old Crow', model_name: 'chirp-crow', major_model_version: 'v5', is_public: true },
+            ],
+            next_cursor: 'c1',
+            has_more: true,
+          };
+        }
+        return {
+          clips: [
+            { id: 's3', title: 'Old Fenix', model_name: 'chirp-fenix', major_model_version: 'v5.5', is_public: false },
+            { id: 's4', title: 'Old V4', model_name: 'chirp-v4', major_model_version: 'v4', is_public: true },
+          ],
+          next_cursor: null,
+          has_more: false,
+        };
+      },
+    });
+    mockApi.requests.length = 0;
+
+    const result = await client.callTool('get_library_stats', { scope: 'all', include_songs: true });
+    const data = JSON.parse(result.content[0].text);
+
+    assert.equal(data.songs_scanned, 4);
+    assert.equal(data.v6_count, 1);
+    assert.equal(data.non_v6_count, 3);
+    assert.equal(data.truncated, false);
+    assert.equal(data.public, 3);
+    assert.equal(data.private, 1);
+    assert.equal(data.non_v6_songs.length, 3);
+    assert.equal(data.non_v6_songs[0].model_name, 'chirp-crow');
+    assert.ok(mockApi.requests[1].body.cursor === 'c1', 'second page should use the returned cursor');
+  });
+
   test('search_songs posts query and filters to own songs', async () => {
     mockApi.setResponse('/api/search/', {
       status: 200,
@@ -473,6 +536,43 @@ describe('MCP Server — with mock token via WebSocket bridge', () => {
     assert.equal(mockApi.requests[0].method, 'POST');
     assert.equal(mockApi.requests[0].path, '/api/playlist/v2/pl-123/tracks/add');
     assert.deepEqual(mockApi.requests[0].body.clip_ids, ['clip-a', 'clip-b']);
+  });
+
+  test('reorder_playlist resolves from_index to clip_id and sends positions', async () => {
+    mockApi.setResponse('/api/playlist/pl-reorder', {
+      status: 200,
+      body: {
+        playlist_clips: [
+          { clip: { id: 'clip-0' } },
+          { clip: { id: 'clip-1' } },
+          { clip: { id: 'clip-2' } },
+        ],
+      },
+    });
+    mockApi.setResponse('/api/playlist/v2/pl-reorder/tracks/reorder-by-index', {
+      status: 200,
+      body: { success: true, updated_fields: ['track_order'] },
+    });
+    mockApi.requests.length = 0;
+
+    await client.callTool('reorder_playlist', { playlist_id: 'pl-reorder', from_index: 2, to_index: 0 });
+
+    const reorderReq = mockApi.requests.find(r => r.path.endsWith('/tracks/reorder-by-index'));
+    assert.ok(reorderReq, 'reorder request should be sent');
+    assert.deepEqual(reorderReq.body.positions, [{ clip_id: 'clip-2', index: 0 }]);
+  });
+
+  test('reorder_playlist accepts an explicit clip_id without resolving', async () => {
+    mockApi.setResponse('/api/playlist/v2/pl-reorder/tracks/reorder-by-index', {
+      status: 200,
+      body: { success: true },
+    });
+    mockApi.requests.length = 0;
+
+    await client.callTool('reorder_playlist', { playlist_id: 'pl-reorder', clip_id: 'clip-9', to_index: 1 });
+
+    assert.equal(mockApi.requests.length, 1);
+    assert.deepEqual(mockApi.requests[0].body.positions, [{ clip_id: 'clip-9', index: 1 }]);
   });
 
   test('like_song sends LIKE reaction', async () => {
@@ -568,6 +668,103 @@ describe('MCP Server — with mock token via WebSocket bridge', () => {
     assert.equal(data.lyrics, 'some lyrics');
   });
 
+  test('download_song wav resolves via /api/gen/{id}/wav_file/', async () => {
+    const apiPort = mockApiServer.address().port;
+    mockApi.setResponse('/api/clip/wav-clip', {
+      status: 200,
+      body: { id: 'wav-clip', title: 'Wav Test', user_id: 'me-123' },
+    });
+    mockApi.setResponse('/api/user/me', {
+      status: 200,
+      body: { user_id: 'me-123', handle: 'me' },
+    });
+    mockApi.setResponse('/api/gen/wav-clip/wav_file/', {
+      status: 200,
+      body: { wav_file_url: `http://localhost:${apiPort}/downloads/wav-clip.wav` },
+    });
+    mockApi.setResponse('/downloads/wav-clip.wav', {
+      status: 200,
+      body: {},
+    });
+    mockApi.requests.length = 0;
+
+    const result = await client.callTool('download_song', {
+      clip_id: 'wav-clip',
+      format: 'wav',
+      output_dir: '/tmp/opencode',
+    });
+
+    assert.match(result.content[0].text, /Downloaded to/);
+    assert.ok(mockApi.requests.some(r => r.path === '/api/gen/wav-clip/wav_file/'), 'should query wav_file endpoint');
+    assert.ok(!mockApi.requests.some(r => r.path.includes('/convert_wav/')), 'no conversion needed when wav_file_url exists');
+  });
+
+  test('download_song m4a decrypts encrypted media_urls via mango rights', async () => {
+    const apiPort = mockApiServer.address().port;
+    const clipId = 'enc-clip-1';
+    const token = 'fake-test-token-12345';
+
+    // Build an encrypted stream the same way Suno does: content is
+    // AES-256-CTR; the content key/iv are AES-256-GCM-wrapped with
+    // SHA-256(bearer token) and the clip id as additional data.
+    const userKey = createHash('sha256').update(token).digest();
+    const contentKey = randomBytes(32);
+    const contentIv = randomBytes(16);
+    const plaintext = randomBytes(4096);
+    const encoder = createCipheriv('aes-256-ctr', contentKey, contentIv);
+    const encrypted = Buffer.concat([encoder.update(plaintext), encoder.final()]);
+
+    const wrap = (buf) => {
+      const iv = randomBytes(12);
+      const cipher = createCipheriv('aes-256-gcm', userKey, iv);
+      cipher.setAAD(Buffer.from(clipId));
+      const ct = Buffer.concat([cipher.update(buf), cipher.final(), cipher.getAuthTag()]);
+      return Buffer.concat([iv, ct]).toString('base64');
+    };
+
+    mockApi.setResponse(`/api/clip/${clipId}`, {
+      status: 200,
+      body: {
+        id: clipId,
+        title: 'Enc Test',
+        user_id: 'me-123',
+        audio_url: 'https://studio-api.prod.suno.com/api/forbidden',
+        media_urls: [{
+          url: `http://127.0.0.1:${apiPort}/encrypted-${clipId}.m4a`,
+          content_type: 'm4a-opus',
+          encoding: '1.0.0',
+        }],
+      },
+    });
+    mockApi.setResponse('/api/user/me', { status: 200, body: { user_id: 'me-123', handle: 'me' } });
+    mockApi.setResponse('/api/mango/rights', {
+      status: 200,
+      body: { key: wrap(contentKey), iv: wrap(contentIv), glt: 'test-glt' },
+    });
+    mockApi.setResponse(`/encrypted-${clipId}.m4a`, {
+      status: 200,
+      contentType: 'audio/mp4',
+      body: encrypted,
+    });
+    mockApi.requests.length = 0;
+
+    const result = await client.callTool('download_song', {
+      clip_id: clipId,
+      format: 'm4a',
+      output_dir: '/tmp/opencode',
+    });
+
+    const match = result.content[0].text.match(/Downloaded to (.+?) \(/);
+    assert.ok(match, `expected download path in: ${result.content[0].text}`);
+    const written = await readFile(match[1]);
+    assert.deepEqual(written, plaintext, 'decrypted bytes should match the original audio');
+
+    assert.ok(mockApi.requests.some(r => r.path === '/api/mango/rights'), 'should request media rights');
+    const mediaReq = mockApi.requests.find(r => r.path === `/encrypted-${clipId}.m4a`);
+    assert.ok(mediaReq, 'should fetch the encrypted media URL');
+    assert.equal(mediaReq.auth, undefined, 'must not send the Bearer token to the media CDN');
+  });
+
   test('list_personas calls /api/persona/get-personas/', async () => {
     mockApi.setResponse('/api/persona/get-personas/', {
       status: 200,
@@ -612,15 +809,81 @@ describe('MCP Server — with mock token via WebSocket bridge', () => {
     assert.equal(mockApi.requests[0].path, '/api/project/feed');
   });
 
-  test('get_project_clips calls /api/project/{id}/clips', async () => {
-    mockApi.setResponse('/api/project/proj-1/clips', {
+  test('get_project_clips reads project_clips from the project detail endpoint', async () => {
+    mockApi.setResponse('/api/project/proj-1', {
       status: 200,
-      body: { clips: [{ id: 'c1' }] },
+      body: { id: 'proj-1', name: 'Proj', clip_count: 1, project_clips: [{ clip: { id: 'c1' } }] },
     });
     mockApi.requests.length = 0;
 
-    await client.callTool('get_project_clips', { project_id: 'proj-1' });
-    assert.equal(mockApi.requests[0].path, '/api/project/proj-1/clips');
+    const result = await client.callTool('get_project_clips', { project_id: 'proj-1' });
+    const data = JSON.parse(result.content[0].text);
+    assert.equal(mockApi.requests[0].path, '/api/project/proj-1');
+    assert.equal(data.clip_count, 1);
+    assert.equal(data.clips.length, 1);
+  });
+
+  test('create_workspace posts name and description to /api/project', async () => {
+    mockApi.setResponse('/api/project', {
+      status: 200,
+      body: { id: 'ws-1', name: 'My Workspace', clip_count: 0 },
+    });
+    mockApi.requests.length = 0;
+
+    const result = await client.callTool('create_workspace', { name: 'My Workspace', description: 'Test' });
+    const data = JSON.parse(result.content[0].text);
+    assert.equal(data.id, 'ws-1');
+    assert.equal(mockApi.requests[0].method, 'POST');
+    assert.equal(mockApi.requests[0].path, '/api/project');
+    assert.deepEqual(mockApi.requests[0].body, { name: 'My Workspace', description: 'Test' });
+  });
+
+  test('add_songs_to_workspace posts update_type add after ownership checks', async () => {
+    mockApi.setResponse('/api/project/ws-add', { status: 200, body: { id: 'ws-add', is_owned: true } });
+    mockApi.setResponse('/api/clip/clip-w1', { status: 200, body: { id: 'clip-w1', user_id: 'me-123' } });
+    mockApi.setResponse('/api/project/ws-add/clips', { status: 204, body: {} });
+    mockApi.requests.length = 0;
+
+    const result = await client.callTool('add_songs_to_workspace', { project_id: 'ws-add', clip_ids: ['clip-w1'] });
+    const data = JSON.parse(result.content[0].text);
+    assert.equal(data.added, 1);
+    const mutation = mockApi.requests.find(r => r.path === '/api/project/ws-add/clips');
+    assert.equal(mutation.method, 'POST');
+    assert.equal(mutation.body.update_type, 'add');
+    assert.deepEqual(mutation.body.metadata.clip_ids, ['clip-w1']);
+  });
+
+  test('remove_songs_from_workspace posts update_type remove', async () => {
+    mockApi.setResponse('/api/project/ws-rm', { status: 200, body: { id: 'ws-rm', is_owned: true } });
+    mockApi.setResponse('/api/clip/clip-w2', { status: 200, body: { id: 'clip-w2', user_id: 'me-123' } });
+    mockApi.setResponse('/api/project/ws-rm/clips', { status: 204, body: {} });
+    mockApi.requests.length = 0;
+
+    await client.callTool('remove_songs_from_workspace', { project_id: 'ws-rm', clip_ids: ['clip-w2'] });
+    const mutation = mockApi.requests.find(r => r.path === '/api/project/ws-rm/clips');
+    assert.equal(mutation.body.update_type, 'remove');
+  });
+
+  test('move_songs_to_workspace groups by source project (add from library, move between workspaces)', async () => {
+    mockApi.setResponse('/api/project/ws-target', { status: 200, body: { id: 'ws-target', is_owned: true } });
+    mockApi.setResponse('/api/clip/clip-lib', { status: 200, body: { id: 'clip-lib', user_id: 'me-123' } });
+    mockApi.setResponse('/api/clip/clip-src', { status: 200, body: { id: 'clip-src', user_id: 'me-123', project: { id: 'ws-source' } } });
+    mockApi.setResponse('/api/project/ws-target/clips', { status: 204, body: {} });
+    mockApi.setResponse('/api/project/ws-source/clips', { status: 204, body: {} });
+    mockApi.requests.length = 0;
+
+    const result = await client.callTool('move_songs_to_workspace', { target_project_id: 'ws-target', clip_ids: ['clip-lib', 'clip-src'] });
+    const data = JSON.parse(result.content[0].text);
+    assert.equal(data.moved, 2);
+
+    const addReq = mockApi.requests.find(r => r.path === '/api/project/ws-target/clips');
+    assert.equal(addReq.body.update_type, 'add');
+    assert.deepEqual(addReq.body.metadata.clip_ids, ['clip-lib']);
+
+    const moveReq = mockApi.requests.find(r => r.path === '/api/project/ws-source/clips');
+    assert.equal(moveReq.body.update_type, 'move');
+    assert.equal(moveReq.body.metadata.target_project_id, 'ws-target');
+    assert.deepEqual(moveReq.body.metadata.clip_ids, ['clip-src']);
   });
 
   test('delete_playlist trashes playlist via POST', async () => {
@@ -679,6 +942,8 @@ describe('MCP Server — create_song payload construction', () => {
         ...process.env,
         MCP_WS_PORT: String(wsPort),
         MCP_API_BASE_URL: `http://localhost:${apiPort}`,
+        MCP_MANGO_BASE_URL: `http://127.0.0.1:${apiPort}`,
+        MCP_TOKEN_FILE: '',
       },
     });
     child.stderr.on('data', () => {});
@@ -916,6 +1181,74 @@ describe('MCP Server — create_song payload construction', () => {
     assert.equal(genBody.prompt, 'more lyrics here');
     assert.equal(genBody.task, 'extend');
   });
+
+  test('create_song defaults to V6 chirp-hawk and omits the legacy params field', async () => {
+    mockApi.setResponse('/api/c/check', { status: 200, body: { required: false, captcha_version: 2 } });
+    mockApi.setResponse('/api/generate/v2-web/', { status: 200, body: { clips: [] } });
+    mockApi.requests.length = 0;
+
+    await client.callTool('create_song', { lyrics: 'test' });
+
+    const genBody = mockApi.requests[1].body;
+    assert.equal(genBody.mv, 'chirp-hawk');
+    assert.equal(genBody.params, undefined);
+  });
+
+  test('create_song with max_mode and vocal_gender sets v6 metadata fields', async () => {
+    mockApi.setResponse('/api/c/check', { status: 200, body: { required: false, captcha_version: 2 } });
+    mockApi.setResponse('/api/generate/v2-web/', { status: 200, body: { clips: [] } });
+    mockApi.requests.length = 0;
+
+    await client.callTool('create_song', {
+      lyrics: 'test',
+      mv: 'chirp-goose',
+      max_mode: true,
+      vocal_gender: 'f',
+    });
+
+    const genBody = mockApi.requests[1].body;
+    assert.equal(genBody.mv, 'chirp-goose');
+    assert.equal(genBody.metadata.is_max_mode, true);
+    assert.equal(genBody.metadata.vocal_gender, 'f');
+  });
+
+  test('create_song with duration, variety, and personalize sets v6 payload fields', async () => {
+    mockApi.setResponse('/api/c/check', { status: 200, body: { required: false, captcha_version: 2 } });
+    mockApi.setResponse('/api/generate/v2-web/', { status: 200, body: { clips: [] } });
+    mockApi.requests.length = 0;
+
+    await client.callTool('create_song', {
+      lyrics: 'test',
+      mv: 'chirp-hawk-wild',
+      duration: 120,
+      variety: 3,
+      personalize: true,
+      personalize_lyrics: true,
+    });
+
+    const genBody = mockApi.requests[1].body;
+    assert.equal(genBody.mv, 'chirp-hawk-wild');
+    assert.equal(genBody.duration, 120);
+    assert.equal(genBody.use_personalization, true);
+    assert.equal(genBody.do_personalize_lyrics, true);
+    assert.equal(genBody.metadata.control_sliders.aug_creativity, 3);
+  });
+
+  test('create_song clamps duration and defaults variety for personalize', async () => {
+    mockApi.setResponse('/api/c/check', { status: 200, body: { required: false, captcha_version: 2 } });
+    mockApi.setResponse('/api/generate/v2-web/', { status: 200, body: { clips: [] } });
+    mockApi.requests.length = 0;
+
+    await client.callTool('create_song', {
+      lyrics: 'test',
+      duration: 999,
+      personalize: true,
+    });
+
+    const genBody = mockApi.requests[1].body;
+    assert.equal(genBody.duration, 360);
+    assert.equal(genBody.metadata.control_sliders.aug_creativity, 1);
+  });
 });
 
 describe('MCP Server — WebSocket bridge token refresh', () => {
@@ -937,6 +1270,8 @@ describe('MCP Server — WebSocket bridge token refresh', () => {
         ...process.env,
         MCP_WS_PORT: String(wsPort),
         MCP_API_BASE_URL: `http://localhost:${apiPort}`,
+        MCP_MANGO_BASE_URL: `http://127.0.0.1:${apiPort}`,
+        MCP_TOKEN_FILE: '',
       },
     });
     child.stderr.on('data', () => {});

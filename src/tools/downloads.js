@@ -1,11 +1,27 @@
 import { writeFile, mkdir } from 'node:fs/promises';
+import { createDecipheriv, createHash } from 'node:crypto';
 import { join, resolve, dirname } from 'node:path';
 import { sunoClient } from '../suno-client.js';
 import { getToken } from '../ws-bridge.js';
 import { assertOwned } from '../auth.js';
+import { config } from '../config.js';
 
 function tool(name, description, inputSchema, handler) {
   return { name, description, inputSchema, handler };
+}
+
+// S3/CDN download URLs are self-authenticating (presigned). Sending the Suno
+// Bearer token to S3 makes it reject the request (HTTP 400 "only one auth
+// mechanism allowed"), so only attach it for the Suno API host itself.
+function authHeadersForUrl(url) {
+  try {
+    const host = new URL(url).hostname;
+    const apiHost = new URL(config.apiBaseUrl).hostname;
+    if (host === apiHost) {
+      return { Authorization: `Bearer ${getToken()}` };
+    }
+  } catch { /* relative URL or unparsable — send no auth */ }
+  return {};
 }
 
 function sanitizeFilename(name) {
@@ -83,16 +99,39 @@ function sleep(ms) {
   return new Promise(r => setTimeout(r, ms));
 }
 
-// Suno serves true lossless/WAV via its download endpoint, not by rewriting
-// the CDN URL extension. It returns `{status:"processing"}` first and later
-// `{status:"ready", download_url}` (mirrors the suno.com web client).
-async function resolveSunoDownloadUrl(clipId, format) {
+// Suno's V6 web client no longer serves WAV by rewriting the CDN URL. It uses
+// the generation endpoints instead:
+//   POST /api/gen/{clip_id}/convert_wav/   -> 204 (starts conversion)
+//   GET  /api/gen/{clip_id}/wav_file/      -> {} until ready, then {wav_file_url}
+// (polled every 5s, up to ~24 tries). The older
+// GET /api/download/clip/{clip_id}?format=wav route still responds and is kept
+// as a fallback.
+async function resolveGenWavUrl(clipId) {
+  const wavPath = `/api/gen/${encodeURIComponent(clipId)}/wav_file/`;
+
+  const initial = await sunoClient.GET(wavPath);
+  if (initial.ok && initial.data?.wav_file_url) return initial.data.wav_file_url;
+
+  const trigger = await sunoClient.POST(`/api/gen/${encodeURIComponent(clipId)}/convert_wav/`);
+  if (!trigger.ok && trigger.status !== 204) {
+    throw new Error(trigger.error || `WAV conversion request failed: HTTP ${trigger.status}`);
+  }
+
+  for (let attempt = 0; attempt < 24; attempt++) {
+    await sleep(5000);
+    const result = await sunoClient.GET(wavPath);
+    if (result.ok && result.data?.wav_file_url) return result.data.wav_file_url;
+  }
+  throw new Error('Timed out waiting for Suno WAV conversion');
+}
+
+async function resolveLegacyDownloadUrl(clipId, format) {
   const path = `/api/download/clip/${encodeURIComponent(clipId)}?format=${encodeURIComponent(format)}`;
   for (let attempt = 0; attempt < 20; attempt++) {
     const result = await sunoClient.GET(path);
     if (!result.ok) throw new Error(result.error || `Download URL request failed: HTTP ${result.status}`);
     const data = result.data || {};
-    if (data.status === 'ready' && data.download_url) return data.download_url;
+    if (data.download_url) return data.download_url;
     if (data.status === 'error') throw new Error(data.error || 'Suno download failed');
     if (attempt >= 2 && (data.ok === false || data.status === 'not_available')) {
       throw new Error(data.detail || data.error || 'Suno download not available');
@@ -100,6 +139,127 @@ async function resolveSunoDownloadUrl(clipId, format) {
     await sleep(3000);
   }
   throw new Error('Timed out waiting for Suno download URL');
+}
+
+async function resolveSunoDownloadUrl(clipId, format) {
+  if (format === 'wav') {
+    try {
+      return await resolveGenWavUrl(clipId);
+    } catch (err) {
+      console.error('[downloads] convert_wav flow failed, falling back to legacy download endpoint:', err.message);
+    }
+  }
+  return resolveLegacyDownloadUrl(clipId, format);
+}
+
+// ─── media_urls / encrypted ("mango") stream support ────────────────────────
+//
+// V6-era clips have `audio_url: /api/forbidden`; the real audio lives in
+// `media_urls[]`. Entries without `encoding` are plain progressive files
+// (downloadable directly); entries WITH `encoding` are AES-encrypted
+// fragmented MP4 and require the license flow the web player uses:
+//   POST {mangoHost}/api/mango/rights -> {key, iv, glt}
+//   userKey  = SHA-256(bearer token) (or SHA-256(glt) for guests)
+//   key/iv   = AES-256-GCM unwrap (iv = first 12 bytes, AAD = clip id)
+//   content  = AES-256-CTR decrypt of the whole encrypted media stream
+// Mirrors the BetterSuno extension's `resolveSunoAudioBytes`.
+
+function extractMediaEntries(song) {
+  const media = Array.isArray(song?.media_urls) ? song.media_urls
+    : Array.isArray(song?.metadata?.media_urls) ? song.metadata.media_urls
+    : Array.isArray(song?.meta?.media_urls) ? song.meta.media_urls
+    : [];
+  return media.filter(m => m && typeof m.url === 'string' && m.url);
+}
+
+function pickProgressiveMediaEntry(entries, format) {
+  const requested = String(format || '').trim().toLowerCase();
+  const matches = (entry) => {
+    const type = String(entry?.content_type || '').toLowerCase();
+    const url = String(entry?.url || '').toLowerCase().split('?')[0];
+    if (requested === 'mp3') return type.includes('mp3') || url.endsWith('.mp3');
+    if (requested === 'm4a') return type.includes('m4a') || type.includes('mp4') || url.endsWith('.m4a');
+    return false;
+  };
+  return entries.find(e => !e.encoding && matches(e)) || null;
+}
+
+function findEncryptedMediaEntry(entries) {
+  return entries.find(e => !!e.encoding) || null;
+}
+
+async function fetchMediaEntries(clipId, song) {
+  const direct = extractMediaEntries(song);
+  if (direct.length > 0) return direct;
+
+  // Older/stale clips may not carry media_urls — refetch via feed/v3 by id
+  // (same lookup the web player and the extension use).
+  const result = await sunoClient.POST('/api/feed/v3', {
+    body: { limit: 1, filters: { ids: { presence: 'True', clipIds: [clipId] } } },
+  });
+  if (!result.ok) return [];
+  const clips = result.data?.clips || result.data?.results || result.data?.items || [];
+  const clip = clips.find(c => c?.id === clipId) || clips[0];
+  return extractMediaEntries(clip);
+}
+
+function sha256(buf) {
+  return createHash('sha256').update(buf).digest();
+}
+
+function unwrapGcmKey(wrappedB64, contentId, userKey) {
+  const wrapped = Buffer.from(wrappedB64, 'base64');
+  const iv = wrapped.subarray(0, 12);
+  const rest = wrapped.subarray(12);
+  const tag = rest.subarray(rest.length - 16);
+  const ciphertext = rest.subarray(0, rest.length - 16);
+  const decipher = createDecipheriv('aes-256-gcm', userKey, iv);
+  decipher.setAAD(Buffer.from(contentId));
+  decipher.setAuthTag(tag);
+  return Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+}
+
+async function resolveSunoAudioBytes(clipId, song) {
+  const token = getToken();
+  if (!token) throw new Error('No auth token. Is BetterSuno extension running and connected?');
+
+  let entries = await fetchMediaEntries(clipId, song);
+  let encrypted = findEncryptedMediaEntry(entries);
+  if (!encrypted) {
+    entries = await fetchMediaEntries(clipId, null);
+    encrypted = findEncryptedMediaEntry(entries);
+  }
+  if (!encrypted) throw new Error('No encrypted media URL available for this clip');
+
+  const rightsResp = await fetch(`${config.mangoBaseUrl}/api/mango/rights`, {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content_params: { content_id: clipId, content_type: 'clip' } }),
+  });
+  if (!rightsResp.ok) throw new Error(`Suno license request failed: HTTP ${rightsResp.status}`);
+  const rights = await rightsResp.json();
+  if (!rights?.key || !rights?.iv) throw new Error('Suno license response missing key/iv');
+
+  const userKey = sha256(token || rights.glt);
+  const aesKey = unwrapGcmKey(rights.key, clipId, userKey);
+  const aesIv = unwrapGcmKey(rights.iv, clipId, userKey);
+
+  const mediaResp = await fetch(encrypted.url);
+  if (!mediaResp.ok) throw new Error(`Suno media fetch failed: HTTP ${mediaResp.status}`);
+  const encryptedBytes = Buffer.from(await mediaResp.arrayBuffer());
+
+  const decipher = createDecipheriv('aes-256-ctr', aesKey, aesIv);
+  return Buffer.concat([decipher.update(encryptedBytes), decipher.final()]);
+}
+
+async function fetchBuffer(url) {
+  const response = await fetch(url, { headers: authHeadersForUrl(url) });
+  if (!response.ok) throw new Error(`Download failed: HTTP ${response.status}`);
+  return {
+    buffer: Buffer.from(await response.arrayBuffer()),
+    contentType: response.headers.get('content-type'),
+    finalUrl: response.url || url,
+  };
 }
 
 export function registerDownloadTools(server, allTools) {
@@ -112,6 +272,7 @@ export function registerDownloadTools(server, allTools) {
       required: ['clip_id'],
     }, async (args) => {
       const s = await assertOwned(args.clip_id);
+      const mediaEntries = extractMediaEntries(s);
       return {
         content: [{
           type: 'text',
@@ -123,9 +284,15 @@ export function registerDownloadTools(server, allTools) {
             video_url: s.video_url,
             video_cover_url: s.metadata?.video_cover_url,
             lyrics: s.metadata?.prompt || s.lyrics,
-            // WAV is served via GET /api/download/clip/{clip_id}?format=wav (returns
-            // a real .wav URL once ready), not by rewriting audio_url.
-            wav_via_download_endpoint: true,
+            // V6 clips expose audio via media_urls. Entries with `encoding` are
+            // AES-encrypted and are decrypted by download_song; entries without
+            // `encoding` are plain progressive files.
+            media_urls: mediaEntries,
+            has_encrypted_media: !!findEncryptedMediaEntry(mediaEntries),
+            // WAV is materialized via POST /api/gen/{clip_id}/convert_wav/ and
+            // then fetched from GET /api/gen/{clip_id}/wav_file/
+            // ({wav_file_url}); the legacy /api/download/clip route is a fallback.
+            wav_via_convert_endpoint: true,
             owner_handle: s.user?.username || s.metadata?.user?.username,
           }, null, 2),
         }],
@@ -144,32 +311,51 @@ export function registerDownloadTools(server, allTools) {
       const song = await assertOwned(args.clip_id);
       const requestedExt = (args.format || 'm4a').toLowerCase();
 
-      let audioUrl = null;
+      let buffer;
+      let contentType = null;
+      let actualUrl = null;
+
       if (requestedExt === 'wav') {
-        audioUrl = await resolveSunoDownloadUrl(args.clip_id, 'wav');
+        const wavUrl = await resolveSunoDownloadUrl(args.clip_id, 'wav');
+        const fetched = await fetchBuffer(wavUrl);
+        buffer = fetched.buffer;
+        contentType = fetched.contentType;
+        actualUrl = fetched.finalUrl;
       } else {
-        audioUrl = getAudioUrlForFormat(song, requestedExt) || song.audio_url;
+        // Prefer a plain progressive media asset; otherwise decrypt the
+        // encrypted stream (V6 clips have `audio_url: /api/forbidden`).
+        let entries = await fetchMediaEntries(args.clip_id, song);
+        const progressive = pickProgressiveMediaEntry(entries, 'm4a');
+        if (progressive) {
+          const fetched = await fetchBuffer(progressive.url);
+          buffer = fetched.buffer;
+          contentType = fetched.contentType;
+          actualUrl = fetched.finalUrl;
+        } else {
+          try {
+            if (findEncryptedMediaEntry(entries) || /forbidden/i.test(String(song.audio_url || '')) || !song.audio_url) {
+              buffer = await resolveSunoAudioBytes(args.clip_id, song);
+              contentType = 'audio/mp4';
+              actualUrl = `${args.clip_id}.m4a`;
+            } else {
+              const legacyUrl = getAudioUrlForFormat(song, requestedExt) || song.audio_url;
+              const fetched = await fetchBuffer(legacyUrl);
+              buffer = fetched.buffer;
+              contentType = fetched.contentType;
+              actualUrl = fetched.finalUrl;
+            }
+          } catch (err) {
+            console.error('[downloads] stream resolution failed, falling back to official download endpoint:', err.message);
+            const legacyUrl = await resolveSunoDownloadUrl(args.clip_id, requestedExt);
+            const fetched = await fetchBuffer(legacyUrl);
+            buffer = fetched.buffer;
+            contentType = fetched.contentType;
+            actualUrl = fetched.finalUrl;
+          }
+        }
       }
-      if (!audioUrl) throw new Error('No audio URL available for this song');
 
-      let response = await fetch(audioUrl, {
-        headers: { 'Authorization': `Bearer ${getToken()}` },
-        credentials: 'include',
-      });
-
-      if (!response.ok && requestedExt === 'm4a') {
-        const fallbackUrl = song.stream_audio_url || song.audio_url;
-        response = await fetch(fallbackUrl, {
-          headers: { 'Authorization': `Bearer ${getToken()}` },
-          credentials: 'include',
-        });
-      }
-
-      if (!response.ok) throw new Error(`Download failed: HTTP ${response.status}`);
-
-      const buffer = Buffer.from(await response.arrayBuffer());
-      const contentType = response.headers.get('content-type');
-      const actualExt = inferAudioExtension(response.url, contentType, requestedExt);
+      const actualExt = inferAudioExtension(actualUrl, contentType, requestedExt);
       const title = sanitizeFilename(song.title || `song_${args.clip_id.slice(-4)}`);
       let filename = `${title}_${args.clip_id.slice(-4)}.${requestedExt}`;
       if (actualExt !== requestedExt) {
@@ -253,7 +439,7 @@ export function registerDownloadTools(server, allTools) {
       if (!downloadUrl) throw new Error('No download URL in response');
 
       const response = await fetch(downloadUrl, {
-        headers: { 'Authorization': `Bearer ${getToken()}` },
+        headers: authHeadersForUrl(downloadUrl),
       });
       if (!response.ok) throw new Error(`Download failed: HTTP ${response.status}`);
 

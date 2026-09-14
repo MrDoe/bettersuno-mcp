@@ -1,6 +1,6 @@
 # BetterSuno MCP Server — API Reference
 
-**74 tools** across 12 modules. All tools require the BetterSuno extension to be running with an active Suno.com tab for authentication.
+**77 tools** across 12 modules. All tools require the BetterSuno extension to be running with an active Suno.com tab for authentication.
 
 > Ownership/safety: download, metadata, and delete tools are gated to songs you own (`assertOwned`). Cover/extend/mashup of another artist's song is allowed only when that song's `metadata.can_remix` is `true`. `play_song` works for ANY song (including public songs from other users' playlists) and does not gate ownership. Comments (`get_song_comments`, `post_song_comment`, `update_comment_reaction`) are opt-in — the server must be started with `MCP_ALLOW_COMMENTS=true`.`explore_feed` is read-only public browsing; downloading or saving cover art of those songs is blocked by the ownership gate.
 
@@ -19,7 +19,14 @@ Generate a song from custom lyrics and style tags.
 | `tags` | string | No | Style/genre tags (e.g. `"pop, upbeat, synth"`) |
 | `negative_tags` | string | No | Styles to avoid |
 | `instrumental` | boolean | No | Make instrumental (no vocals) |
-| `mv` | string | No | Model version (`chirp-fenix`, `chirp-v4`, `chirp-v3-5`). Default: `chirp-fenix` |
+| `mv` | string | No | Model version. V6 family: `chirp-hawk` (default), `chirp-hawk-wild`, `chirp-goose`; legacy: `chirp-fenix`, `chirp-crow`, `chirp-bluejay`, `chirp-v4`, `chirp-v3-5` |
+| `max_mode` | boolean | No | V6 Max Mode — full-length, highest-quality take (requires plan access) |
+| `vocal_gender` | string | No | `"m"` or `"f"` to force the vocal gender; omit to let Suno choose |
+| `duration` | number | No | V6 target duration in seconds (10–360); omit for model default/auto |
+| `variety` | number | No | V6 Variety (`aug_creativity`) level 0–4: 0=off, 1=normal, 2=high, 3=extra, 4=max |
+| `personalize` | boolean | No | V6 Personalize ("My Taste"); defaults Variety to level 1 when `variety` is omitted |
+| `personalize_lyrics` | boolean | No | Let Personalize adapt the lyrics (`do_personalize_lyrics`) |
+| `personalize_user_uuid` | string | No | Optional target user UUID for Personalize |
 | `weirdness` | number | No | Weirdness 0–100 |
 | `style_weight` | number | No | Style influence 0–100 |
 | `audio_weight` | number | No | Audio influence 0–100 |
@@ -37,7 +44,14 @@ Generate a song from a description. Suno auto-writes the lyrics. Now supports al
 | `description` | string | Yes | Style/description text (e.g. `"a sad ballad about losing a pet"`) |
 | `title` | string | No | Song title |
 | `instrumental` | boolean | No | Make instrumental |
-| `mv` | string | No | Model version. Default: `chirp-fenix` |
+| `mv` | string | No | Model version. V6 family: `chirp-hawk` (default), `chirp-hawk-wild`, `chirp-goose`; legacy: `chirp-fenix`, `chirp-crow`, `chirp-bluejay`, `chirp-v4`, `chirp-v3-5` |
+| `max_mode` | boolean | No | V6 Max Mode — full-length, highest-quality take (requires plan access) |
+| `vocal_gender` | string | No | `"m"` or `"f"` to force the vocal gender; omit to let Suno choose |
+| `duration` | number | No | V6 target duration in seconds (10–360); omit for model default/auto |
+| `variety` | number | No | V6 Variety (`aug_creativity`) level 0–4: 0=off, 1=normal, 2=high, 3=extra, 4=max |
+| `personalize` | boolean | No | V6 Personalize ("My Taste"); defaults Variety to level 1 when `variety` is omitted |
+| `personalize_lyrics` | boolean | No | Let Personalize adapt the lyrics (`do_personalize_lyrics`) |
+| `personalize_user_uuid` | string | No | Optional target user UUID for Personalize |
 | `tags` | string | No | Additional style tags |
 | `negative_tags` | string | No | Styles to avoid |
 | `weirdness` | number | No | Weirdness 0–100 |
@@ -61,7 +75,14 @@ Create a cover version of an existing song. Now supports custom lyrics, all slid
 | `negative_tags` | string | No | Styles to avoid |
 | `start_s` | number | No | Start time in seconds |
 | `end_s` | number | No | End time in seconds |
-| `mv` | string | No | Model version. Default: `chirp-fenix` |
+| `mv` | string | No | Model version. V6 family: `chirp-hawk` (default), `chirp-hawk-wild`, `chirp-goose`; legacy: `chirp-fenix`, `chirp-crow`, `chirp-bluejay`, `chirp-v4`, `chirp-v3-5` |
+| `max_mode` | boolean | No | V6 Max Mode — full-length, highest-quality take (requires plan access) |
+| `vocal_gender` | string | No | `"m"` or `"f"` to force the vocal gender; omit to let Suno choose |
+| `duration` | number | No | V6 target duration in seconds (10–360); omit for model default/auto |
+| `variety` | number | No | V6 Variety (`aug_creativity`) level 0–4: 0=off, 1=normal, 2=high, 3=extra, 4=max |
+| `personalize` | boolean | No | V6 Personalize ("My Taste"); defaults Variety to level 1 when `variety` is omitted |
+| `personalize_lyrics` | boolean | No | Let Personalize adapt the lyrics (`do_personalize_lyrics`) |
+| `personalize_user_uuid` | string | No | Optional target user UUID for Personalize |
 | `instrumental` | boolean | No | Make instrumental |
 | `weirdness` | number | No | Weirdness 0–100 |
 | `style_weight` | number | No | Style influence 0–100 |
@@ -80,7 +101,14 @@ Extend a song from a specific point. Now supports all style options and sliders.
 | `clip_id` | string | Yes | ID of the song to extend |
 | `continue_at` | number | Yes | Time in seconds to extend from |
 | `lyrics` | string | No | Optional lyrics for the extension |
-| `mv` | string | No | Model version. Default: `chirp-fenix` |
+| `mv` | string | No | Model version. V6 family: `chirp-hawk` (default), `chirp-hawk-wild`, `chirp-goose`; legacy: `chirp-fenix`, `chirp-crow`, `chirp-bluejay`, `chirp-v4`, `chirp-v3-5` |
+| `max_mode` | boolean | No | V6 Max Mode — full-length, highest-quality take (requires plan access) |
+| `vocal_gender` | string | No | `"m"` or `"f"` to force the vocal gender; omit to let Suno choose |
+| `duration` | number | No | V6 target duration in seconds (10–360); omit for model default/auto |
+| `variety` | number | No | V6 Variety (`aug_creativity`) level 0–4: 0=off, 1=normal, 2=high, 3=extra, 4=max |
+| `personalize` | boolean | No | V6 Personalize ("My Taste"); defaults Variety to level 1 when `variety` is omitted |
+| `personalize_lyrics` | boolean | No | Let Personalize adapt the lyrics (`do_personalize_lyrics`) |
+| `personalize_user_uuid` | string | No | Optional target user UUID for Personalize |
 | `tags` | string | No | Style tags for the extension |
 | `negative_tags` | string | No | Styles to avoid |
 | `instrumental` | boolean | No | Make instrumental |
@@ -113,7 +141,7 @@ Blend two or more songs into a mashup.
 | `clip_ids` | string[] | Yes | Array of 2+ song clip IDs to mash up |
 | `title` | string | No | Mashup title |
 | `tags` | string | No | Style tags for the mashup |
-| `mv` | string | No | Model version. Default: `chirp-fenix` |
+| `mv` | string | No | Model version. V6 family: `chirp-hawk` (default), `chirp-hawk-wild`, `chirp-goose`; legacy: `chirp-fenix`, `chirp-crow`, `chirp-bluejay`, `chirp-v4`, `chirp-v3-5` |
 
 ---
 
@@ -197,13 +225,30 @@ Expand and enhance style tags with AI suggestions.
 
 ## Library
 
-(Unchanged — see original 9 tools: `list_library`, `get_song`, `get_songs_by_ids`, `search_songs`, `search_users`, `get_profile`, `get_current_user`, `get_user_session`)
+Tools: `list_library`, `get_song`, `get_songs_by_ids`, `search_songs`, `search_users`, `get_profile`, `get_current_user`, `get_user_session`, `get_library_stats`.
+
+### `get_library_stats`
+
+Walks `POST /api/feed/v3` (cursor pagination, 50/page, 429-aware through the shared client) and aggregates the library: song counts per model/version, public/private split, and V6 coverage.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `scope` | string | No | `all` (default), `public`, or `liked` |
+| `max_songs` | number | No | Safety cap on songs scanned (default 2500, max 20000); `truncated: true` in the result means more remain |
+| `include_songs` | boolean | No | Also return the non-V6 song list (`id`, `title`, `model_name`, `major_model_version`, `created_at`, `is_public`) |
+
+Note: the V6 feed filter key for public songs is `public: "True"` (not `is_public`).
 
 ---
 
 ## Downloads
 
 Standard tools plus `download_sample_pack`.
+
+`download_song` handles the V6 media model automatically:
+- `format: "m4a"` downloads a plain progressive `media_urls[]` asset when one exists; otherwise it uses the encrypted stream (Suno's license flow: `POST /api/mango/rights` → unwrap key/iv with SHA-256 of the bearer token (AES-256-GCM, AAD = clip id) → AES-256-CTR-decrypt the media). Falls back to the official `/api/download/clip` endpoint.
+- `format: "wav"` asks Suno to convert (`POST /api/gen/{clip_id}/convert_wav/`) and polls `GET /api/gen/{clip_id}/wav_file/` for `{wav_file_url}` (legacy `/api/download/clip?format=wav` fallback).
+- Presigned S3/CDN URLs never receive the Suno Bearer token (S3 would reject the request with HTTP 400).
 
 ### `download_sample_pack`
 
@@ -293,6 +338,36 @@ Set configurations for a clip (display tags, etc.).
 ## Uploads
 
 (Unchanged — `upload_audio`, `upload_image`, `upload_video`)
+
+---
+
+## Workspaces (Projects)
+
+Read: `list_projects`, `get_project`, `get_project_clips`. Writes are ownership-gated (`assertWorkspaceOwned` + `assertOwned` per clip):
+
+### `create_workspace`
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `name` | string | Yes | Workspace name (truncated to 100 chars) |
+| `description` | string | No | Workspace description |
+
+### `add_songs_to_workspace` / `remove_songs_from_workspace`
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `project_id` | string | Yes | Workspace ID |
+| `clip_ids` | string[] | Yes | Song clip IDs (songs stay in the library either way) |
+
+### `move_songs_to_workspace`
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `target_project_id` | string | Yes | Destination workspace ID |
+| `clip_ids` | string[] | Yes | Song clip IDs to move |
+| `source_project_id` | string | No | Optional source workspace; defaults to each clip's current project, or the library |
+
+Under the hood: `POST /api/project` creates; `POST /api/project/{id}/clips` with `{update_type:"add"|"remove"|"move", metadata:{clip_ids, target_project_id?}}` mutates (cross-workspace moves target the source project).
 
 ---
 

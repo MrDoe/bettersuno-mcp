@@ -16,6 +16,12 @@ import { registerPlaybackTools } from './tools/playback.js';
 import { registerCommentTools } from './tools/comments.js';
 import { registerFeedTools } from './tools/feed.js';
 import { registerPromptTools } from './tools/prompts.js';
+import { runSetupCli } from './opencode-setup.js';
+
+const cliArgs = process.argv.slice(2);
+if (cliArgs[0] === 'setup') {
+  process.exit(runSetupCli(cliArgs.slice(1)));
+}
 
 initBridge();
 

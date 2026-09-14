@@ -8,7 +8,9 @@
 ## Architecture
 | File | Role |
 |------|------|
-| `src/index.js` | Entry point: imports 12 tool modules, starts WS bridge, connects stdio transport. |
+| `src/index.js` | Entry point: imports 12 tool modules, starts WS bridge, connects stdio transport. Also handles the `bettersuno-mcp setup` subcommand (`src/opencode-setup.js`). |
+| `src/opencode-setup.js` | Registers the server in an opencode config (`~/.config/opencode/opencode.json[c]` or project `opencode.json[c]`) via JSONC-preserving edits. Used by `setup` and by the npm postinstall. `BETTERSUNO_MCP_SKIP_SETUP=1` opts out, `BETTERSUNO_MCP_CONFIG` overrides the target path. |
+| `scripts/postinstall.mjs` | npm postinstall wrapper around `setupOpencodeConfig` — global installs target `~/.config/opencode`, project installs the `INIT_CWD`, dev installs inside this repo are skipped. |
 | `src/suno-client.js` | HTTP client wrapping `studio-api.prod.suno.com` — GET/POST/PATCH/DELETE with 429 exponential backoff (1s→30s, 5 retries) and 401 pass-through (no auto-refresh, extension re-pushes). |
 | `src/ws-bridge.js` | WebSocket server on `127.0.0.1:9423` — receives auth token, captcha tokens, and `extension_request`/`response` round-trips from the BetterSuno extension. |
 | `src/auth.js` | Ownership gate — `assertOwned`, `assertCanCover`, `fetchClip` helpers. Caches `_currentUser`. |
@@ -29,26 +31,41 @@ Server **requires** the [BetterSuno extension](https://github.com/MrDoe/SunoNoti
 4. Any WS connection re-push updates the token — no disconnect penalty.
 
 ## Generation semantics
-- Pre-call `POST /api/c/check` with `{ctype:"generation"}`. If `required:true`, MCP sends `captcha_required` to extension and waits for `captcha_token` response.
+- Pre-call `POST /api/c/check` with `{ctype:"generation"}`. If `required:true`, MCP sends `captcha_required` (with `captcha_version`) to the extension and waits for `captcha_token`. `captcha_version` is **1 = hCaptcha, 2 = Turnstile**; the extension only solves Turnstile (clear error for hCaptcha).
 - `token:null, token_provider:null` required in generation payload (else 422).
-- **`params: {}` required** in `POST /api/generate/v2-web/` bodies (else 500/422 "We couldn't verify your request" / `token_validation_failed`). All generation payloads in `src/tools/generation.js` carry it; `suno-client.generate()` injects `params: payload.params ?? {}` as a safety net. (2026-08: Suno added this field.)
+- **`params` is gone (2026-09)**: the V6 web client omits it and generation succeeds without it. Do NOT inject it (`suno-client.generate()` no longer does). (2026-08 it was required; Suno removed that requirement with V6.)
 - **Captcha sitekey**: Suno's generation Turnstile sitekey is `NEXT_PUBLIC_CLOUDFLARE_TURNSTILE_SITE_KEY_GEN` embedded in a `suno.com/_next/static/chunks/*.js` bundle (pattern `...SITE_KEY_GEN||"0x4AAAA..."`). Do NOT hardcode Cloudflare's test key (`0x4AAA...AAAQAAA`) — Suno rejects those tokens. The extension discovers the real key dynamically; see BetterSuno AGENTS.md.
 - Mode switch: `gpt_description_prompt` empty + `prompt` set → Custom mode (lyrics provided). `gpt_description_prompt` set + `prompt` empty → Inspiration mode (auto-lyrics).
 - Sliders: `metadata.control_sliders` (`weirdness_constraint`, `style_weight`, `audio_weight`, 0–1) + `metadata.can_control_sliders`. Input 0–100, converted to 0.0–1.0 internally.
+- **V6 options** (accepted by `create_song`, `inspire_song`, `cover_song`, `extend_song`):
+  - `max_mode` → `metadata.is_max_mode: true` (plan feature `max-mode`).
+  - `vocal_gender` (`"m"`/`"f"`) → `metadata.vocal_gender`.
+  - `duration` (seconds, clamped 10–360) → top-level `duration`.
+  - `variety` (level `0`–`4`: off/normal/high/extra/max) → `metadata.control_sliders.aug_creativity` (V6-only; the web slider's raw state is the level, **not** 0–1). Values outside 0–4 → 400 "creativity slider out of range".
+  - `personalize` / `personalize_lyrics` / `personalize_user_uuid` → top-level `use_personalization: true`, `do_personalize_lyrics`, `personalization_user_uuid`. The web UI forces Variety on before Personalize; MCP defaults `aug_creativity` to 1 when personalize is set without `variety`.
 - **Core generation tools** (`create_song`, `inspire_song`, `cover_song`, `extend_song`) support `negative_tags`, control sliders, `persona_id` + `persona_model` (`"voice_persona"` for Vox — **default**, `"style_persona"` for style).
 - **Persona linkage needs `task`, NOT `persona_model`**: Suno's backend links a clip to its persona (which makes the GUI show the voice chip via the clip's `persona` object) only when the payload carries the right top-level `task`. `persona_model` is a **fictional field** — the suno.com web client never sends it. The server maps `persona_model` → `task`: Vox → `vox`/`vox_cover`/`vox_extend`; style → `artist_consistency`/`artist_cover`/`artist_extend`. (2026-08: verified against the live web bundle + real API responses.)
+- **Models**: default `chirp-hawk` (V6). Valid V6 keys: `chirp-hawk`, `chirp-hawk-wild` (v6-wild), `chirp-goose` (v6-mini) — from `GET /api/billing/info/` → `models[].external_key`. Legacy keys (`chirp-fenix`, `chirp-crow`, `chirp-bluejay`, `chirp-auk`, `chirp-v4`, `chirp-v3-5`) still generate but aren't shown in the current web UI.
 - **`mashup_song`**: 2+ clip IDs, asserts `can_remix` on each. **`concat_songs`**: no ownership gate, hits `POST /api/generate/concat/v2/`.
 - **Lyrics tools**: `generate_lyrics` (cowrite), `lyrics_infill` (placeholders `[...]`), `lyrics_mashup` (blend two lyrics).
 - `create_song`/`inspire_song` try WS relay first (`relay_generate`), fall back to direct API. `cover_song`/`extend_song` go direct.
 
 ## Key gotchas
 - **Comments opt-in**: all comment tools throw unless `MCP_ALLOW_COMMENTS=true`.
-- **Search**: uses `POST /api/search/` (GET returns 405). Filters results to only own songs via `/api/user/me`.
+- **Search**: uses `POST /api/search/` (GET returns 405). Filters results to only own songs via `/api/user/me`. `library_song` searches are server-capped at 250 rows (`from_index ≥ 250` returns 0 hits even though `total_hits` reports more).
+- **Library feed filters**: `/api/feed/v3` filters use the V6 BooleanFilter keys — `liked`, `disliked`, `public`, `fullSong`, `stem`… The public filter is `{public:"True"}`; `{is_public:"True"}` is silently ignored.
 - **Prompts**: stored in extension's IndexedDB; accessed via WS `extension_request`/`response` round-trip. Needs extension connected.
 - **Downloads**: `download_song` uses `inferAudioExtension` helper to check `Content-Type` and correct file extension when Suno returns a different format than requested.
-- **WAV downloads**: Suno does **not** serve WAV by rewriting the CDN URL (`.mp3`→`.wav` returns 403). Real WAV comes from `GET /api/download/clip/{clip_id}?format=wav`, which returns `{status:"processing"}` then `{status:"ready", download_url}` (poll ≈3s, ≤20 tries) — mirrors the suno.com web client. `download_song` uses this for `format:"wav"`; `m4a` still uses the CDN rewrite. The BetterSuno extension's batch download uses the same endpoint for WAV (`resolveSunoDownloadUrl`).
+- **Downloads (V6 media model)**: V6 clips have `audio_url: /api/forbidden`; real audio lives in `media_urls[]`.
+  - Entries **without** `encoding` are plain progressive files (m4a/mp3) → direct download.
+  - Entries **with** `encoding` are AES-encrypted fragmented MP4. `download_song` replicates the web player's license flow (`resolveSunoAudioBytes`): `POST {MCP_MANGO_BASE_URL}/api/mango/rights` → `{key,iv,glt}`, `userKey=SHA-256(bearer token)`, AES-256-GCM-unwrap key/iv (AAD = clip id), then AES-256-CTR-decrypt the stream. `MCP_MANGO_BASE_URL` defaults to `https://studio-api-prod.suno.com` (note the hyphen; different host from the API).
+  - **Never send the Suno Bearer header to S3/CDN URLs** — S3 rejects it with HTTP 400 ("only one auth mechanism allowed"). `authHeadersForUrl()` only attaches auth for the API host.
+  - WAV: `POST /api/gen/{clip_id}/convert_wav/` (204) then poll `GET /api/gen/{clip_id}/wav_file/` every 5s (≤24 tries) for `{wav_file_url}`; legacy `GET /api/download/clip/{clip_id}?format=wav` (`{ok, download_url}`) is the fallback. `m4a` uses the progressive/decrypt path above.
+- **Playlist writes**: reorder now takes `{positions:[{clip_id,index}]}` on `/api/playlist/v2/{id}/tracks/reorder-by-index`; `/api/playlist/v2/{id}` returns metadata only (tracks come from v1 `GET /api/playlist/{id}`). `reorder_playlist` resolves `from_index` → `clip_id` via the v1 listing.
+- **Async edits**: `crop_clip`/`fade_clip` wait on `GET /api/edit/action/{action_clip_id}/` until `complete` before returning the resulting clip id.
 - **Playback** (`play_song`/`stop_playback`): works for ANY song (no ownership gate). MCP→WS→extension→suno tab player.
 - **Edit tools** (`crop_clip`, `fade_clip`, `reverse_clip`, `adjust_speed`): only work on owned clips (`assertOwned`).
+- **Extension reconnect race**: right after the WS bridge starts, `No auth token` can be transient — the extension's MV3 background worker redials 10s after a disconnect, or when its 2-min `ensureOffscreenAlive` alarm wakes it if already suspended. Retry for up to ~2 min (or check `ss -tnp | grep 9423` for an ESTAB) before assuming a stale instance.
 - **Auth cache**: `getCurrentUser()` caches result in `_currentUser`. Tests that need fresh per-user state per call must account for this.
 
 ## Firefox & browser setup
@@ -70,8 +87,22 @@ Server **requires** the [BetterSuno extension](https://github.com/MrDoe/SunoNoti
 ## Single-instance rule (WS bridge)
 - Only **one** bettersuno-mcp server can bind `ws://127.0.0.1:9423` at a time. The extension connects to whoever owns the port.
 - Every opencode session spawns its own MCP server; a second session's server will hit `EADDRINUSE` and now **exits with an actionable FATAL message** instead of silently serving broken tools.
-- If extension tools report "not connected", a stale instance almost certainly owns the port: `pkill -f bettersuno-mcp` (the running session's server is respawned by opencode on next tool use).
+- If extension tools **persistently** report "not connected" (past the ~2 min reconnect window above), a stale instance almost certainly owns the port: `pkill -f bettersuno-mcp`.
+  - **Caution**: `pkill -f bettersuno-mcp` also matches the invoking shell (the pattern appears in its command line) — quote it as `pkill -f 'bettersuno[-]mcp'`.
+  - In practice opencode does **not** re-register a killed MCP server's tools mid-session; after killing it the `bettersuno-mcp_*` tools disappear until the session/MCP is restarted. Prefer letting the owner of the stale process handle it.
+- `MCP_TOKEN_FILE` controls the debug token dump (`/tmp/suno_token.txt` by default, still written after auth). Tests set it to empty so they don't clobber the live token.
 - Avoid registering this server in both `opencode.json` and `opencode.jsonc` — one registration per session is enough.
+
+## Dev tooling (scripts/)
+- **`scripts/suno-api.mjs`** — authenticated API probe. Reuses the token dump the server writes after extension auth:
+  `node scripts/suno-api.mjs GET /api/user/me`, `node scripts/suno-api.mjs POST /api/search/ '{"..."}'`, `@file` bodies supported. Env: `SUNO_TOKEN`, `MCP_TOKEN_FILE`, `MCP_API_BASE_URL`, `MCP_MANGO_BASE_URL` (`/api/mango/*` automatically targets the mango host).
+- **`scripts/dump-suno-api.mjs`** — dumps the web client's current `/api` surface for diffs: fetches `suno.com`, follows `/_next/static` chunk imports, extracts quoted `/api/...` paths. `--out <file>` saves a baseline, `--diff <baseline>` prints added/removed paths (use after a Suno API change; browser-based dump in BetterSuno AGENTS.md may see a few more dynamically-loaded chunks).
+- **Workspace API (verified 2026-09)**: `POST /api/project` `{name, description}` creates a workspace; `POST /api/project/{id}/clips` with `{update_type:"add"|"remove"|"move"|"pinned", metadata:{clip_ids, target_project_id?, pinned?}}` mutates membership (204; cross-workspace moves target the *source* project with `target_project_id`). Reads: `list_projects`/`get_project`/`get_project_clips`. MCP exposes create + membership mutations; billing/account settings stay out.
+
+## Safety constraints
+- **Never expose billing, payment, subscription, or account/profile-settings features as MCP tools.** Billing endpoints (`/api/billing/*`), plan changes, tax/payment methods, account settings, collaborator/invite management, etc. stay out of the tool surface.
+- **Workspaces are an approved mutation scope** (`create_workspace`, `add_songs_to_workspace`, `remove_songs_from_workspace`, `move_songs_to_workspace`) alongside the existing song/playlist/edit tools. Workspace membership operations require ownership (`assertWorkspaceOwned` + `assertOwned` per clip).
+- For manual/one-off account mutations use `scripts/suno-api.mjs` interactively; that script is a dev tool, not an MCP feature.
 
 ## Lessons from the field
 - **firefox-devtools network capture is unreliable for file uploads**: `list_network_requests` often shows 0 requests despite page activity. S3 presigned-POST uploads (multipart form) may not appear as fetch/XHR requests in the observer.
@@ -117,3 +148,56 @@ Workflow used for `2138/log_from_year_2138_track_21_level_five_protocol/` (a Sun
 - `npm run publish:patch` / `npm run publish:minor` — bumps version, creates git tag, pushes tag (triggers GHA publish workflow).
 - GHA runner ships npm 10.x with Node 22; workflow upgrades to npm 11.5.1+ for OIDC trusted publisher compatibility.
 - CI runs `npm test` on Node 18/20/22 for all PRs and pushes to `main`.
+
+<!-- BEGIN opencode-rag -->
+## Code Navigation
+
+ALWAYS use OpenCodeRAG tools before reading or editing:
+- **Search first** — `search_semantic(query)` instead of grep/glob
+- **Skeleton before read** — `get_file_skeleton(filePath)` then read specific lines
+- **Usages before edit** — `find_usages(symbolName)` before modifying any symbol
+- **Images via describe** — `describe_image(filePath, systemPrompt?)` — never read raw bytes
+- **Recall quirks** — `recall_quirks(query)` when you hit a known pitfall
+- **Add quirks** — `add_quirk(content)` when you discover a non-obvious fact
+- **Fix quirks** — `update_quirk(id, ...)` / `delete_quirk(id)` when a stored quirk is outdated or wrong
+
+If no results, run `opencode-rag index`.
+
+### Decision tree — ALWAYS follow this order
+1. User mentions code behavior/architecture → `search_semantic(query)`
+2. User mentions a file path → `get_file_skeleton(filePath)` THEN `read` on specific lines
+3. User mentions a function/class/variable to edit → `find_usages(symbolName)` THEN `search_semantic` THEN `edit`
+4. User asks a code question → `search_semantic` to gather context before answering
+5. User asks about an image or visual asset → `describe_image(filePath)` (optionally pass `systemPrompt` to focus on specific features) to retrieve its generated description, then optionally `search_semantic` for related code
+6. You encounter an error or need to recall a known pitfall → `recall_quirks(query)`
+7. You discover a non-obvious fact or workaround → `add_quirk(content)` to persist it for future sessions
+8. A recalled quirk is outdated or wrong → `update_quirk(id, ...)` to fix it, or `delete_quirk(id)` if it no longer applies
+
+### Proactive triggers — you MUST call these tools when
+- User asks about code behavior, architecture, or implementation details
+- User asks to edit, refactor, or fix code — call `find_usages` first
+- User references files or functions you haven't read yet
+- User says "find", "search", "look up", "where is", "how does"
+- User refers to an image, screenshot, diagram, or visual asset
+- Before answering ANY code-related question, retrieve context first
+- Before reading ANY file, call `get_file_skeleton` to orient first
+
+### Anti-patterns — NEVER do these
+- Reading full files without calling `get_file_skeleton` first (wastes tokens)
+- Editing a function without calling `find_usages` first (breaks call sites)
+- Answering code questions without calling `search_semantic` first (you guess at behavior)
+- Using `grep`/`glob` when `search_semantic` would find the answer faster
+- Treating image files as text — use `describe_image` instead of reading raw bytes
+- Using `npx opencode-rag quirk` shell commands instead of the built-in quirk tools (`add_quirk` / `recall_quirks` / `update_quirk` / `delete_quirk`) (the tools are faster, already loaded in-process, and go through the trust monitor)
+
+### MANDATORY quirk capture rules — you MUST call `add_quirk` when
+- A build, test, or type-check command fails and you resolve it
+- You discover an undocumented library constraint, peer dep, or workaround
+- You learn an environment-specific requirement (OS, tool version, etc.)
+- You make a design decision that future sessions should remember
+- You resolve a gotcha that cost more than one attempt
+
+### MANDATORY quirk hygiene — you MUST call `update_quirk` or `delete_quirk` when
+- A stored quirk is outdated, wrong, or has been fixed — update it or delete it instead of adding a contradicting duplicate
+- NEVER finish a coding session without adding quirks for resolved errors.
+<!-- END opencode-rag -->

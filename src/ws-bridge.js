@@ -59,7 +59,9 @@ function startWsServer() {
         }
         if (msg.token) {
           currentToken = msg.token;
-          try { writeFileSync('/tmp/suno_token.txt', msg.token); } catch {}
+          if (config.tokenFile) {
+            try { writeFileSync(config.tokenFile, msg.token); } catch {}
+          }
           console.error('[ws-bridge] Token updated');
         }
         return;
@@ -138,9 +140,9 @@ export function requestFromExtension(action, payload = {}, timeoutMs = null) {
   });
 }
 
-export function requestCaptcha() {
+export function requestCaptcha(captchaVersion = null) {
   return new Promise((resolve, reject) => {
-    const sent = sendToExtension({ type: 'captcha_required' });
+    const sent = sendToExtension({ type: 'captcha_required', captcha_version: captchaVersion });
     if (!sent) {
       return reject(new Error('BetterSuno extension is not connected. If another opencode session holds ws://127.0.0.1:' + config.wsPort + ', kill it with: pkill -f bettersuno-mcp'));
     }

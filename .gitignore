@@ -3,6 +3,7 @@ projects/
 Downloads/
 2138/
 scripts/
+.opencode/opencode.json
 *.log
 *.mjs
 *.m4a

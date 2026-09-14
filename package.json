@@ -8,12 +8,14 @@
   },
   "scripts": {
     "start": "node src/index.js",
+    "postinstall": "node scripts/postinstall.mjs",
     "test": "node --test test/integration.test.js",
     "publish:patch": "npm version patch --no-git-tag-version && git tag v$(node -p \"require('./package.json').version\") && git push origin v$(node -p \"require('./package.json').version\")",
     "publish:minor": "npm version minor --no-git-tag-version && git tag v$(node -p \"require('./package.json').version\") && git push origin v$(node -p \"require('./package.json').version\")"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
+    "jsonc-parser": "^3.3.1",
     "ws": "^8.18.0"
   },
   "engines": {
@@ -21,6 +23,7 @@
   },
   "files": [
     "src/",
+    "scripts/postinstall.mjs",
     "LICENSE",
     "README.md",
     "API.md",
