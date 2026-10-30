@@ -1322,3 +1322,119 @@ describe('MCP Server — WebSocket bridge token refresh', () => {
     assert.equal(mockApi.requests[0].auth, 'Bearer second-token-refreshed');
   });
 });
+
+describe('MCP Server — Suno account switch invalidates cached identity', () => {
+  // Regression test: the extension pushes a new token on every reconnect and
+  // the account behind it can change. Ownership checks must follow the
+  // current token, not a user cached under a previous login.
+  let client, child, mockApi, mockApiServer, apiPort;
+  const wsPort = 9506;
+
+  async function pushToken(token) {
+    const ws = new WebSocket(`ws://localhost:${wsPort}`);
+    await once(ws, 'open');
+    ws.send(JSON.stringify({ type: 'auth', token }));
+    await new Promise(r => setTimeout(r, 300));
+    ws.close();
+    await new Promise(r => setTimeout(r, 200));
+  }
+
+  function mockWavClip(clipId, ownerId) {
+    mockApi.setResponse(`/api/clip/${clipId}`, {
+      status: 200,
+      body: { id: clipId, title: `Clip ${clipId}`, user_id: ownerId },
+    });
+    mockApi.setResponse(`/api/gen/${clipId}/wav_file/`, {
+      status: 200,
+      body: { wav_file_url: `http://localhost:${apiPort}/downloads/${clipId}.wav` },
+    });
+    mockApi.setResponse(`/downloads/${clipId}.wav`, { status: 200, body: {} });
+  }
+
+  before(async () => {
+    mockApi = createMockSunoApi();
+    await new Promise(resolve => {
+      mockApiServer = mockApi.server.listen(0, resolve);
+    });
+    apiPort = mockApiServer.address().port;
+
+    child = spawn('node', ['src/index.js'], {
+      cwd: process.cwd(),
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: {
+        ...process.env,
+        MCP_WS_PORT: String(wsPort),
+        MCP_API_BASE_URL: `http://localhost:${apiPort}`,
+        MCP_MANGO_BASE_URL: `http://127.0.0.1:${apiPort}`,
+        MCP_TOKEN_FILE: '',
+        MCP_GENERATION_INTERVAL_MS: '0',
+      },
+    });
+    child.stderr.on('data', () => {});
+
+    client = new McpStdioClient(child);
+    await client.request('initialize', {
+      protocolVersion: '2024-11-05',
+      capabilities: {},
+      clientInfo: { name: 'test-client', version: '0.0.1' },
+    });
+    child.stdin.write(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }) + '\n');
+
+    await new Promise(r => setTimeout(r, 500));
+    await pushToken('token-account-a');
+  });
+
+  after(() => {
+    if (child) child.kill();
+    if (mockApiServer) mockApiServer.close();
+  });
+
+  test('download works under the first login', async () => {
+    mockApi.setResponse('/api/user/me', { status: 200, body: { user_id: 'user-a', handle: 'a' } });
+    mockWavClip('clip-a', 'user-a');
+
+    const result = await client.callTool('download_song', {
+      clip_id: 'clip-a', format: 'wav', output_dir: '/tmp/opencode',
+    });
+    assert.match(result.content[0].text, /Downloaded to/);
+  });
+
+  test('download of own clip works after switching accounts', async () => {
+    await pushToken('token-account-b');
+    mockApi.setResponse('/api/user/me', { status: 200, body: { user_id: 'user-b', handle: 'b' } });
+    mockWavClip('clip-b', 'user-b');
+
+    const result = await client.callTool('download_song', {
+      clip_id: 'clip-b', format: 'wav', output_dir: '/tmp/opencode',
+    });
+    assert.match(result.content[0].text, /Downloaded to/);
+  });
+
+  test('search_songs filters by the current account after a switch', async () => {
+    mockApi.setResponse('/api/search/', {
+      status: 200,
+      body: {
+        result: { song: { result: [
+          { id: 'b1', user_id: 'user-b', title: 'Mine now' },
+          { id: 'a1', user_id: 'user-a', title: 'Mine before' },
+        ] } },
+      },
+    });
+
+    const res = await client.callTool('search_songs', { query: 'x' });
+    const data = JSON.parse(res.content[0].text);
+    assert.equal(data.count, 1);
+    assert.equal(data.clips[0].id, 'b1');
+  });
+
+  test("another account's clip is still denied after a switch", async () => {
+    mockWavClip('clip-c', 'user-c');
+
+    await assert.rejects(
+      () => client.callTool('download_song', {
+        clip_id: 'clip-c', format: 'wav', output_dir: '/tmp/opencode',
+      }),
+      /Access denied/
+    );
+  });
+});
