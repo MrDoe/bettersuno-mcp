@@ -243,12 +243,17 @@ async function resolveSunoAudioBytes(clipId, song) {
   const userKey = sha256(token || rights.glt);
   const aesKey = unwrapGcmKey(rights.key, clipId, userKey);
   const aesIv = unwrapGcmKey(rights.iv, clipId, userKey);
+  // Drama Llama extension: older catalog clips unwrap to 16-byte key/iv
+  // (AES-128-CTR content cipher); newer ones to 32 bytes (AES-256-CTR).
+  // Pick by unwrapped length instead of assuming 256-bit.
+  const contentCipher =
+    aesKey.length === 16 && aesIv.length === 16 ? 'aes-128-ctr' : 'aes-256-ctr';
 
   const mediaResp = await fetch(encrypted.url);
   if (!mediaResp.ok) throw new Error(`Suno media fetch failed: HTTP ${mediaResp.status}`);
   const encryptedBytes = Buffer.from(await mediaResp.arrayBuffer());
 
-  const decipher = createDecipheriv('aes-256-ctr', aesKey, aesIv);
+  const decipher = createDecipheriv(contentCipher, aesKey, aesIv);
   return Buffer.concat([decipher.update(encryptedBytes), decipher.final()]);
 }
 
