@@ -19,7 +19,7 @@ import { once } from 'node:events';
 import { createCipheriv, createHash, randomBytes } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
-import { WebSocketServer } from 'ws';
+import { WebSocket, WebSocketServer } from 'ws';
 
 // ─── helpers ───────────────────────────────────────────────────────────────────
 
