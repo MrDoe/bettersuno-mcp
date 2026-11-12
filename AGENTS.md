@@ -8,14 +8,14 @@
 ## Architecture
 | File | Role |
 |------|------|
-| `src/index.js` | Entry point: imports 12 tool modules, starts WS bridge, connects stdio transport. Also handles the `bettersuno-mcp setup` subcommand (`src/opencode-setup.js`). |
+| `src/index.js` | Entry point: imports 18 tool modules, starts WS bridge, connects stdio transport. Adds MCP `title`/`annotations` to every tool at list time. Also handles the `bettersuno-mcp setup` subcommand (`src/opencode-setup.js`). |
 | `src/opencode-setup.js` | Registers the server in an opencode config (`~/.config/opencode/opencode.json[c]` or project `opencode.json[c]`) via JSONC-preserving edits. Used by `setup` and by the npm postinstall. `BETTERSUNO_MCP_SKIP_SETUP=1` opts out, `BETTERSUNO_MCP_CONFIG` overrides the target path. |
 | `scripts/postinstall.mjs` | npm postinstall wrapper around `setupOpencodeConfig` — global installs target `~/.config/opencode`, project installs the `INIT_CWD`, dev installs inside this repo are skipped. |
 | `src/suno-client.js` | HTTP client wrapping `studio-api.prod.suno.com` — GET/POST/PATCH/DELETE with 429 exponential backoff (1s→30s, 5 retries) and 401 pass-through (no auto-refresh, extension re-pushes). |
 | `src/ws-bridge.js` | WebSocket server on `127.0.0.1:9423` — receives auth token, captcha tokens, and `extension_request`/`response` round-trips from the BetterSuno extension. |
 | `src/auth.js` | Ownership gate — `assertOwned`, `assertCanCover`, `fetchClip` helpers. Caches `_currentUser`. |
 | `src/config.js` | Env-based configuration (`MCP_WS_PORT`, `MCP_API_BASE_URL`, `MCP_ALLOW_COMMENTS`, `MCP_WS_TIMEOUT`). |
-| `src/tools/*.js` | 12 modules, each exports `register*Tools(server, allTools)` or `register*Tools(allTools)`. |
+| `src/tools/*.js` | 18 modules, each exports `register*Tools(server, allTools)` or `register*Tools(allTools)`. Includes albums, reactions, covers/visuals, notifications, custom models, and lyrics projects. |
 
 ## Browser dependency
 Server **requires** the [BetterSuno extension](https://github.com/MrDoe/SunoNotifications) at runtime:
@@ -53,7 +53,7 @@ Server **requires** the [BetterSuno extension](https://github.com/MrDoe/SunoNoti
 ## Key gotchas
 - **Turnstile captchas — always ask the user to solve them**: if generation fails with "We couldn't verify your request" or a "Cloudflare Turnstile check could not be solved automatically" error, STOP retrying. The extension first reuses Suno's own Turnstile widget/token and otherwise renders a visible widget in the Suno tab with a "tick the checkbox" hint; ask the user to tick "Verify you are human" there, then retry. Remote-debugged/automated browsers (`navigator.webdriver === true`) can never pass. Generation calls are also deliberately serialised with a randomized gap (`MCP_GENERATION_INTERVAL_MS`, default 20s) to keep Cloudflare from escalating.
 - **Comments opt-in**: all comment tools throw unless `MCP_ALLOW_COMMENTS=true`.
-- **Search**: uses `POST /api/search/` (GET returns 405). Filters results to only own songs via `/api/user/me`. `library_song` searches are server-capped at 250 rows (`from_index ≥ 250` returns 0 hits even though `total_hits` reports more).
+- **Search**: uses `POST /api/search/` (GET returns 405). Filters results to only own songs via `/api/user/me`. `library_song` searches are server-capped at 250 rows (`from_index ≥ 250` returns 0 hits even though `total_hits` reports more). `search_type` must be one of the live enum values (`library_song`, `lyrics`, `public_song`, …) — the old `song` value now returns 422. `library_song` only matches title/tag metadata, not lyrics; use the `search_by_lyrics` tool for `metadata.prompt` phrase search (extension-DB candidates + batched `feed/v3` ids lookups, with `created_after`/`created_before` date bounds).
 - **Library feed filters**: `/api/feed/v3` filters use the V6 BooleanFilter keys — `liked`, `disliked`, `public`, `fullSong`, `stem`… The public filter is `{public:"True"}`; `{is_public:"True"}` is silently ignored.
 - **Prompts**: stored in extension's IndexedDB; accessed via WS `extension_request`/`response` round-trip. Needs extension connected.
 - **BetterSuno DB as library source**: `get_db_songs` and `get_library_stats {source:"db"}` read the `songsList` store of the extension's page-side IndexedDB (`BetterSunoicationsDB`) via the WS action `get_db_songs` (MCP → `background.handleMcpExtensionRequest` → suno-tab content script → `loadSongsFromIDB`). No Suno API calls. The cache is populated by the extension's **Fetch Songs** button; records carry `model_name`/`major_model_version`, `play_count` (played/unplayed), `task`, `cover_clip_id` after the 2026-09 metadata extension. `get_db_songs` filters/paginates/sorts server-side (search, model, played, liked, public) and can return per-model/played stats.
@@ -64,7 +64,14 @@ Server **requires** the [BetterSuno extension](https://github.com/MrDoe/SunoNoti
   - Entries **with** `encoding` are AES-encrypted fragmented MP4. `download_song` replicates the web player's license flow (`resolveSunoAudioBytes`): `POST {MCP_MANGO_BASE_URL}/api/mango/rights` → `{key,iv,glt}`, `userKey=SHA-256(bearer token)`, AES-256-GCM-unwrap key/iv (AAD = clip id), then AES-256-CTR-decrypt the stream. `MCP_MANGO_BASE_URL` defaults to `https://studio-api-prod.suno.com` (note the hyphen; different host from the API).
   - **Never send the Suno Bearer header to S3/CDN URLs** — S3 rejects it with HTTP 400 ("only one auth mechanism allowed"). `authHeadersForUrl()` only attaches auth for the API host.
   - WAV: `POST /api/gen/{clip_id}/convert_wav/` (204) then poll `GET /api/gen/{clip_id}/wav_file/` every 5s (≤24 tries) for `{wav_file_url}`; legacy `GET /api/download/clip/{clip_id}?format=wav` (`{ok, download_url}`) is the fallback. `m4a` uses the progressive/decrypt path above.
-- **Playlist writes**: reorder now takes `{positions:[{clip_id,index}]}` on `/api/playlist/v2/{id}/tracks/reorder-by-index`; `/api/playlist/v2/{id}` returns metadata only (tracks come from v1 `GET /api/playlist/{id}`). `reorder_playlist` resolves `from_index` → `clip_id` via the v1 listing.
+- **Playlist writes**: reorder now takes `{positions:[{clip_id,index}]}` on `/api/playlist/v2/{id}/tracks/reorder-by-index`; `/api/playlist/v2/{id}` returns metadata only (tracks come from v1 `GET /api/playlist/{id}`). `reorder_playlist` resolves `from_index` → `clip_id` via the v1 listing. Trash requires a JSON body: `{undo:false}` to trash, `{undo:true}` to restore (an empty body returns 422).
+- **Albums (verified 2026-11)**: albums are playlist containers. Create with `POST /api/playlist/create/` `{name, description?, playlist_type:"album", album_type:"lp"|"ep", source_playlist_id?}`; `source_playlist_id` copies an owned playlist's tracks and leaves the source intact. Default state is `draft`. Read with `POST /api/unified/feed` `{feed_id:"library_albums"}` or `{feed_id:"album:<id>"}`; the latter's `feed_metadata` carries `album_type`, `lifecycle_state`, `published_at`, `unpublished_clip_ids`, `is_owned`, and `can_edit`, while `feed.items` are the tracks. Fallback search types are `library_album` / `album`. Update metadata with `PATCH /api/playlist/v2/{id}` `{metadata:{name, cover_image_s3_id?}, bio:{description?}, album:{album_type?}}`; add/remove/reorder tracks with the normal playlist v2 track endpoints. Publish/unpublish: `POST /api/playlist/v2/{id}/album/publish` `{use_album_cover}` and `/album/unpublish` `{unpublish_songs}`. Note: `search` album results can report `is_owned:false` for your own albums; rely on the unified feed's `feed_metadata.is_owned` or the v2 `relationship.is_owned`. MCP exposes all of this in `src/tools/albums.js`.
+- **Notifications**: list via `GET /api/notification/v3?before_datetime_utc=&include_hooks=true` (cursor is `next_before_datetime_utc`). Mark read via `POST /api/notification/v2/read` with `{ids:[...]}` or `{all:true, before_datetime_utc}`. Badge: `GET /api/notification/v2/badge-count`, clear with `POST /api/notification/v2/clear-badge`.
+- **Lyrics projects**: `GET /api/lyrics-projects` returns full lyrics for every project — the list tool omits them by default to avoid huge payloads. Create with `POST /api/lyrics-projects {title}`; save content with `POST /api/lyrics-projects/{id}/flush {lyrics}`; rename with `PATCH {title}`; delete returns 204.
+- **Lyricists**: `GET/POST /api/lyricists`, `GET/PATCH/DELETE /api/lyricists/{id}`. Create/update body is `{title, description, samples:[{kind:"text",text}]}`; favorite via `PATCH {is_favorited}`.
+- **Custom models**: list by filtering `GET /api/billing/info/` models for `external_key` starting with `chirp-custom:` or a `custom` badge. Bases: `GET /api/custom-model/bases/`; pending: `GET /api/custom-model/pending/`; rename: `PUT /api/custom-model/edit/ {id,name}`; archive: `POST /api/custom-model/archive/ {id}`.
+- **Visuals / cover art**: `GET /api/visual/models`, `POST /api/visual/generations`, `GET /api/visual/generations/{id}`. The feature is account/region-gated: the 2026-11 account gets `403 feature_disabled` ("Visuals aren't available right now."). Cover *setting* works without visuals via `PATCH /api/playlist/v2/{id} {metadata:{cover_image_s3_id}}`; cover downloads fetch the CDN URL without the Suno bearer token.
+- **MCP tool annotations**: `src/index.js` adds `title`, `readOnlyHint`, `destructiveHint`, `idempotentHint`, and `openWorldHint` to every tool at `tools/list` time using name-prefix heuristics. Add a tool-level `annotations` object to override a specific tool.
 - **Async edits**: `crop_clip`/`fade_clip` wait on `GET /api/edit/action/{action_clip_id}/` until `complete` before returning the resulting clip id.
 - **Playback** (`play_song`/`stop_playback`): works for ANY song (no ownership gate). MCP→WS→extension→suno tab player.
 - **Edit tools** (`crop_clip`, `fade_clip`, `reverse_clip`, `adjust_speed`): only work on owned clips (`assertOwned`).
@@ -105,6 +112,7 @@ Server **requires** the [BetterSuno extension](https://github.com/MrDoe/SunoNoti
 ## Safety constraints
 - **Never expose billing, payment, subscription, or account/profile-settings features as MCP tools.** Billing endpoints (`/api/billing/*`), plan changes, tax/payment methods, account settings, collaborator/invite management, etc. stay out of the tool surface.
 - **Workspaces are an approved mutation scope** (`create_workspace`, `add_songs_to_workspace`, `remove_songs_from_workspace`, `move_songs_to_workspace`) alongside the existing song/playlist/edit tools. Workspace membership operations require ownership (`assertWorkspaceOwned` + `assertOwned` per clip).
+- **Albums are an approved mutation scope** (`create_album`, `update_album_metadata`, `add_songs_to_album`, `remove_songs_from_album`, `reorder_album_tracks`, `publish_album`, `unpublish_album`, `delete_album`, `restore_album`). Album mutations require ownership (`assertAlbumOwned`). Publishing/unpublishing is a visibility change; document it in the tool description and keep `unpublish_songs` default false.
 - For manual/one-off account mutations use `scripts/suno-api.mjs` interactively; that script is a dev tool, not an MCP feature.
 
 ## Lessons from the field
@@ -166,6 +174,14 @@ ALWAYS use OpenCodeRAG tools before reading or editing:
 
 If no results, run `opencode-rag index`.
 
+### Decision model (`make_decision`)
+
+- Classify, route, or score short text with the local tev1 model (`state` + 1-64 questions).
+- Question types: `choice` (options map to descriptions), `noul` (true/false probability), `score` (ordered rubric levels, lowest first).
+- Keep `state` short (~2k-token context); add a `none` option when no listed option may fit.
+- Never use it as the only check for a high-stakes decision.
+- With `decision.routeBeforeAsking` enabled: route option choices through `make_decision` before asking the user; ask the user only when the model is undecided (low confidence) or the choice is preference-based.
+
 ### Decision tree — ALWAYS follow this order
 1. User mentions code behavior/architecture → `search_semantic(query)`
 2. User mentions a file path → `get_file_skeleton(filePath)` THEN `read` on specific lines
@@ -204,3 +220,29 @@ If no results, run `opencode-rag index`.
 - A stored quirk is outdated, wrong, or has been fixed — update it or delete it instead of adding a contradicting duplicate
 - NEVER finish a coding session without adding quirks for resolved errors.
 <!-- END opencode-rag -->
+
+<!-- opencode-crosstalk:begin -->
+## OpenCode Crosstalk
+
+Other OpenCode sessions in this workspace are reachable through the
+`opencode-crosstalk` plugin: `crosstalk_status`, `crosstalk_peers`,
+`crosstalk_send`, `crosstalk_inbox`, `crosstalk_claim`, `crosstalk_wait`.
+Talk to each other, but keep working — only stop for coordination that prevents
+a real collision.
+
+- **Declare once, then keep moving.** `crosstalk_status` sets your role and goal;
+  `crosstalk_peers` shows active sessions and their leases. Work that does not
+  overlap theirs needs no coordination.
+- **Talk before you collide.** If you need something a peer holds, `crosstalk_send`
+  a short ask and continue elsewhere; replies are injected into live turns (use
+  `crosstalk_inbox` to catch up). Never force a claim.
+- **Lease what you are editing now.** `crosstalk_claim` takes an exclusive expiring
+  lease on exact paths — no globs (`resources`, `note`, `ttlSeconds`). `renew` if the
+  work runs long, `release` when done; a refusal names the holder.
+- **Identity is automatic** — never pass a "who am I". Blocking calls are capped by
+  `maxWaitMs` and may return early; that is normal.
+
+Installed globally (`npm run setup` in `/home/christoph/code/opencode-crosstalk`);
+`opencode api get /api/plugin` shows `opencode.crosstalk` active. Disable per
+workspace with `"plugins": ["-opencode.crosstalk"]`; no permission rule is required.
+<!-- opencode-crosstalk:end -->

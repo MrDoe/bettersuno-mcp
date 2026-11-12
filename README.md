@@ -92,7 +92,7 @@ node /path/to/bettersuno-mcp/src/index.js
 │  └─ MCP stdio ──► bettersuno-mcp (this) │
 │                                          │
 │  bettersuno-mcp                          │
-│  ├─ 77 tools / 12 modules                │
+│  ├─ 121 tools / 18 modules               │
 │  ├─ suno-client.js — HTTP to Suno API    │
 │  └─ ws-bridge.js — WS server on :9423   │
 └──────────────┬──────────────────────────┘
@@ -115,11 +115,17 @@ See [API.md](./API.md) for full tool reference, parameters, and examples.
 | Module | Tools |
 |---|---|
 | Generation | `create_song`, `inspire_song`, `cover_song`, `extend_song`, `remaster_song`, `make_stems`, `get_recommended_styles`, `upsample_tags`, `mashup_song` |
-| Library | `list_library`, `get_song`, `get_songs_by_ids`, `search_songs`, `search_users`, `get_profile`, `get_current_user`, `get_user_session` |
+| Library | `list_library`, `get_song`, `get_songs_by_ids`, `search_songs`, `search_by_lyrics`, `search_users`, `get_profile`, `get_current_user`, `get_user_session` |
 | Downloads | `get_song_urls`, `download_song`, `download_lyrics`, `download_cover_image` |
 | Personas | `create_persona`, `list_personas`, `get_persona`, `list_followed_personas`, `list_loved_personas`, `toggle_love_persona` |
 | Uploads | `upload_audio`, `upload_image`, `upload_video` |
 | Playlists | `list_playlists`, `create_playlist`, `get_playlist`, `get_playlist_songs`, `search_playlists`, `add_to_playlist`, `remove_from_playlist`, `reorder_playlist`, `delete_playlist`, `update_playlist_metadata` |
+| Albums | `list_albums`, `get_album`, `search_albums`, `create_album`, `update_album_metadata`, `add_songs_to_album`, `remove_songs_from_album`, `reorder_album_tracks`, `publish_album`, `unpublish_album`, `delete_album`, `restore_album` |
+| Reactions | `like_album`, `like_playlist`, `pin_album`, `pin_playlist`, `set_playlist_visibility` |
+| Covers | `get_visual_models`, `generate_cover_art`, `get_visual_generation`, `set_cover`, `download_cover` |
+| Notifications | `list_notifications`, `mark_notifications_read`, `get_notification_badge`, `clear_notification_badge` |
+| Custom models | `list_custom_models`, `list_custom_model_bases`, `get_pending_custom_models`, `rename_custom_model`, `archive_custom_model` |
+| Lyrics | `list_lyricists`, `get_lyricist`, `create_lyricist`, `update_lyricist`, `delete_lyricist`, `list_lyrics_projects`, `get_lyrics_project`, `create_lyrics_project`, `update_lyrics_project`, `flush_lyrics_project`, `delete_lyrics_project` |
 | Workspaces | `list_projects`, `get_project`, `get_project_clips` |
 | Metadata | `delete_song`, `trash_song`, `set_visibility`, `like_song`, `update_song_metadata`, `generate_video`, `create_custom_model` |
 | Playback | `play_song`, `stop_playback` |

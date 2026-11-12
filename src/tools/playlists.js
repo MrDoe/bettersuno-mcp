@@ -121,7 +121,9 @@ export function registerPlaylistTools(server, allTools) {
       },
       required: ['playlist_id'],
     }, async (args) => {
-      const result = await sunoClient.POST(`/api/playlist/v2/${encodeURIComponent(args.playlist_id)}/trash`);
+      const result = await sunoClient.POST(`/api/playlist/v2/${encodeURIComponent(args.playlist_id)}/trash`, {
+        body: { undo: false },
+      });
       if (!result.ok) throw new Error(result.error || 'Failed to delete playlist');
       return { content: [{ type: 'text', text: JSON.stringify({ deleted: true, playlist_id: args.playlist_id }, null, 2) }] };
     }),

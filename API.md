@@ -1,6 +1,6 @@
 # BetterSuno MCP Server — API Reference
 
-**77 tools** across 12 modules. All tools require the BetterSuno extension to be running with an active Suno.com tab for authentication.
+**121 tools** across 18 modules. All tools require the BetterSuno extension to be running with an active Suno.com tab for authentication.
 
 > Ownership/safety: download, metadata, and delete tools are gated to songs you own (`assertOwned`). Cover/extend/mashup of another artist's song is allowed only when that song's `metadata.can_remix` is `true`. `play_song` works for ANY song (including public songs from other users' playlists) and does not gate ownership. Comments (`get_song_comments`, `post_song_comment`, `update_comment_reaction`) are opt-in — the server must be started with `MCP_ALLOW_COMMENTS=true`.`explore_feed` is read-only public browsing; downloading or saving cover art of those songs is blocked by the ownership gate.
 
@@ -225,7 +225,7 @@ Expand and enhance style tags with AI suggestions.
 
 ## Library
 
-Tools: `list_library`, `get_song`, `get_songs_by_ids`, `search_songs`, `search_users`, `get_profile`, `get_current_user`, `get_user_session`, `get_library_stats`.
+Tools: `list_library`, `get_song`, `get_songs_by_ids`, `search_songs`, `search_by_lyrics`, `search_users`, `get_profile`, `get_current_user`, `get_user_session`, `get_library_stats`.
 
 ### `get_library_stats`
 
@@ -238,6 +238,34 @@ Walks `POST /api/feed/v3` (cursor pagination, 50/page, 429-aware through the sha
 | `include_songs` | boolean | No | Also return the non-V6 song list (`id`, `title`, `model_name`, `major_model_version`, `created_at`, `is_public`) |
 
 Note: the V6 feed filter key for public songs is `public: "True"` (not `is_public`).
+
+### `search_by_lyrics`
+
+Find the user's own songs whose lyrics (`metadata.prompt`) contain a phrase. Matching is case-, punctuation-, and whitespace-insensitive (`I'm`, `im`, and `I’m` are equivalent).
+
+Candidates come from the BetterSuno extension IndexedDB cache when it is connected: `created_after` / `created_before` narrow the candidate list locally, then full clips are fetched in batches of 100 via `POST /api/feed/v3` with an `ids` filter. Without the extension, the tool paginates `feed/v3` newest-first and uses the date bounds to stop early. Use this instead of `search_songs`, which only searches title/tag metadata.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `query` | string | Yes | Lyric phrase to find |
+| `created_after` | string | No | Earliest creation date. ISO 8601, `YYYY-MM-DD`, or `YYYY-MM` (month start) |
+| `created_before` | string | No | Latest creation date. ISO 8601, `YYYY-MM-DD` (whole day), or `YYYY-MM` (whole month) |
+| `source` | string | No | `auto` (default; DB with feed fallback), `db` (require the extension), or `api` (paginate feed) |
+| `max_songs` | number | No | Candidate cap (default 2500) |
+| `limit` | number | No | Max matches returned (default 100) |
+| `include_lyrics` | boolean | No | Include full `metadata.prompt` for each match |
+
+Example: find a lyric recorded in June 2026:
+
+```json
+{
+  "query": "The dampening field is at maximum, but I'm fighting it",
+  "created_after": "2026-06-01",
+  "created_before": "2026-06"
+}
+```
+
+The result reports `source`, `scanned`, `with_lyrics`, `match_count`, `truncated`, and per-match `id`, `title`, `created_at`, `model_name`, `major_model_version`, `excerpt`, and (optionally) `lyrics`.
 
 ---
 
@@ -371,6 +399,170 @@ Under the hood: `POST /api/project` creates; `POST /api/project/{id}/clips` with
 
 ---
 
+## Albums
+
+Suno albums are playlist containers (`playlist_type: "album"`) with `album_type` `lp` or `ep`. New albums are created as drafts (`lifecycle_state: "draft"`) and become public through `publish_album`. Reads work for public albums by other users; every mutation is ownership-gated via `assertAlbumOwned`.
+
+Tools: `list_albums`, `get_album`, `search_albums`, `create_album`, `update_album_metadata`, `add_songs_to_album`, `remove_songs_from_album`, `reorder_album_tracks`, `publish_album`, `unpublish_album`, `delete_album`, `restore_album`.
+
+### `list_albums`
+
+Reads `POST /api/unified/feed` with `{feed_id: "library_albums", cursor, page_size}` and maps `album` feed items. Pass `user_id` to read `user_albums` with `target_user_id`. Falls back to `POST /api/search/` with `search_type: "library_album"` and an empty term for your own library.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `limit` | number | No | Albums per page (default 50, max 100) |
+| `cursor` | string | No | Pagination cursor |
+| `user_id` | string | No | User UUID to list that user's public albums |
+
+### `get_album`
+
+Reads `POST /api/unified/feed` with `{feed_id: "album:<id>"}`. The `feed_metadata` object carries `album_type`, `lifecycle_state`, `published_at`, `unpublished_clip_ids`, ownership/capabilities, and stats; `feed.items` carries the tracks. Falls back to `GET /api/playlist/v2/{id}` plus `GET /api/playlist/{id}`.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `album_id` | string | Yes | Album ID |
+| `include_tracks` | boolean | No | Include tracks (default true) |
+| `limit` | number | No | Tracks per page (default 50, max 100) |
+| `cursor` | string | No | Pagination cursor |
+
+### `search_albums`
+
+`POST /api/search/` with `search_type: "album"` for public albums or `"library_album"` for your own (including drafts).
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `query` | string | Yes | Album search query |
+| `scope` | string | No | `public` (default) or `library` |
+| `limit` | number | No | Max results (default 50, max 100) |
+
+### `create_album`
+
+`POST /api/playlist/create/` with `{name, description?, playlist_type: "album", album_type: "lp"|"ep", source_playlist_id?}`. With `source_playlist_id`, the tracks of an owned playlist are copied into the new album; the source playlist remains intact. The result is a draft; call `publish_album` to publish it.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `name` | string | Yes | Album name |
+| `description` | string | No | Album description |
+| `album_type` | string | No | `lp` (default) or `ep` |
+| `source_playlist_id` | string | No | Owned playlist whose tracks are copied into the album |
+
+### `update_album_metadata`
+
+`PATCH /api/playlist/v2/{id}` with `{metadata: {name, cover_image_s3_id?}, bio: {description?}, album: {album_type?}}`. The current name is preserved when only other fields are supplied.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `album_id` | string | Yes | Album ID |
+| `name` | string | No | New name |
+| `description` | string | No | New description |
+| `album_type` | string | No | `lp` or `ep` |
+| `cover_image_s3_id` | string | No | Existing Suno S3 image ID (`image_...`) |
+
+### `add_songs_to_album` / `remove_songs_from_album`
+
+`POST /api/playlist/v2/{id}/tracks/add` or `/tracks/remove` with `{clip_ids}`. Removal only detaches tracks; songs stay in the library.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `album_id` | string | Yes | Album ID |
+| `clip_ids` | string[] | Yes | Song clip IDs |
+
+### `reorder_album_tracks`
+
+`POST /api/playlist/v2/{id}/tracks/reorder-by-index` with `{positions: [{clip_id, index}]}`. Provide `clip_id`, or `from_index` to resolve the clip from the v1 playlist listing.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `album_id` | string | Yes | Album ID |
+| `to_index` | number | Yes | Target 0-based index |
+| `clip_id` | string | No | Clip to move |
+| `from_index` | number | No | Current 0-based index (alternative to `clip_id`) |
+
+### `publish_album` / `unpublish_album`
+
+- Publish: `POST /api/playlist/v2/{id}/album/publish` with `{use_album_cover}`. Makes the album tracks public.
+- Unpublish: `POST /api/playlist/v2/{id}/album/unpublish` with `{unpublish_songs}`. Defaults to keeping individual songs published.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `album_id` | string | Yes | Album ID |
+| `use_album_cover` | boolean | No | Publish uses the album cover (publish only, default false) |
+| `unpublish_songs` | boolean | No | Also unpublish tracks (unpublish only, default false) |
+
+### `delete_album` / `restore_album`
+
+`POST /api/playlist/v2/{id}/trash` with `{undo: false}` to trash or `{undo: true}` to restore.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `album_id` | string | Yes | Album ID |
+
+---
+
+## Reactions & Visibility
+
+| Tool | Endpoint | Notes |
+|------|----------|-------|
+| `like_album` | `POST/DELETE /api/playlist/v2/{id}/save` | Save/remove a public album by another user. Saving your own album returns 400 `cannot_save_own`; use `pin_album`. |
+| `like_playlist` | `POST/DELETE /api/playlist/v2/{id}/save` | Same behavior for playlists. |
+| `pin_album` | `POST/DELETE /api/playlist/v2/{id}/pin` | Pin/unpin an album in your library. |
+| `pin_playlist` | `POST/DELETE /api/playlist/v2/{id}/pin` | Pin/unpin a playlist. |
+| `set_playlist_visibility` | `PATCH /api/playlist/v2/{id}` | Body `{metadata:{is_public}}`. |
+
+## Covers & Visuals
+
+| Tool | Endpoint | Notes |
+|------|----------|-------|
+| `get_visual_models` | `GET /api/visual/models` | Visual feature is account/region gated; may return `feature_disabled` (403). |
+| `generate_cover_art` | `POST /api/visual/generations` | Resolves an image model automatically; returns a generation ID. Poll with `get_visual_generation`. |
+| `get_visual_generation` | `GET /api/visual/generations/{id}` | Returns status and takes. |
+| `set_cover` | `PATCH /api/playlist/v2/{id}` | Body `{metadata:{cover_image_s3_id}}`; works for albums and playlists. |
+| `download_cover` | `GET /api/playlist/v2/{id}` + CDN image | Saves the cover to disk. Never sends the Suno bearer token to the CDN. |
+
+Note: the 2026-11 test account had visuals disabled (`feature_disabled` 403 on `/api/visual/models`), so cover *generation* is implemented but cannot be exercised until the feature is enabled. Cover *setting* and downloading work.
+
+## Notifications
+
+| Tool | Endpoint | Notes |
+|------|----------|-------|
+| `list_notifications` | `GET /api/notification/v3?before_datetime_utc=&include_hooks=true` | Returns raw notification text/avatars/actions and `next_before_datetime_utc`. |
+| `mark_notifications_read` | `POST /api/notification/v2/read` | Body `{ids:[...]}` or `{all:true, before_datetime_utc}`. |
+| `get_notification_badge` | `GET /api/notification/v2/badge-count` | Returns `{badge_count}`. |
+| `clear_notification_badge` | `POST /api/notification/v2/clear-badge` | Clears the badge without marking notifications read. |
+
+## Custom Models
+
+| Tool | Endpoint | Notes |
+|------|----------|-------|
+| `list_custom_models` | `GET /api/billing/info/` | Filters `models` to `chirp-custom:*` / `custom` badge; returns `max_active_custom_models` and `max_custom_model_clips`. |
+| `list_custom_model_bases` | `GET /api/custom-model/bases/` | Base models for creating a custom model. |
+| `get_pending_custom_models` | `GET /api/custom-model/pending/` | Training status. |
+| `rename_custom_model` | `PUT /api/custom-model/edit/` | Body `{id, name}`. |
+| `archive_custom_model` | `POST /api/custom-model/archive/` | Body `{id}`. |
+
+## Lyrics Projects & Lyricists
+
+| Tool | Endpoint | Notes |
+|------|----------|-------|
+| `list_lyricists` | `GET /api/lyricists?limit=&cursor=` | Returns id, name, writing_style, sample_lyrics, favorite flag. |
+| `get_lyricist` | `GET /api/lyricists/{id}` | |
+| `create_lyricist` | `POST /api/lyricists` | Body `{title, description, samples:[{kind:"text",text}]}`. |
+| `update_lyricist` | `PATCH /api/lyricists/{id}` | Partial body; supports `is_favorited`. |
+| `delete_lyricist` | `DELETE /api/lyricists/{id}` | |
+| `list_lyrics_projects` | `GET /api/lyrics-projects?limit=&sort=updated_at\|created_at&cursor=` | Omits lyrics by default; `include_lyrics:true` adds them. |
+| `get_lyrics_project` | `GET /api/lyrics-projects/{id}` | Includes full lyrics. |
+| `create_lyrics_project` | `POST /api/lyrics-projects` | Body `{title}` (max 200 chars). |
+| `update_lyrics_project` | `PATCH /api/lyrics-projects/{id}` | Body `{title}`. |
+| `flush_lyrics_project` | `POST /api/lyrics-projects/{id}/flush` | Body `{lyrics}`. |
+| `delete_lyrics_project` | `DELETE /api/lyrics-projects/{id}` | Returns 204. |
+
+## Tool annotations
+
+`tools/list` now includes MCP `title` and `annotations` for every tool (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`). The hints are inferred from tool-name prefixes: `get_`/`list_`/`search_`/`download_` are read-only; `delete_`/`trash_`/`remove_`/`unpublish_`/`archive_` are destructive; `create_`/`generate_`/`publish_`/`upload_`/`search_` are open-world. A tool-level `annotations` object overrides the inferred values.
+
+---
+
 ## Playlists, Workspaces, Playback, Comments, Feed, Prompts
 
 (Unchanged — see original docs)
@@ -404,3 +596,31 @@ All tools return errors as MCP error responses with descriptive messages. Common
 | `/api/gen/{clip_id}/set_clip_prompt/` | POST | `set_clip_prompt` |
 | `/api/gen/{clip_id}/set_configurations/` | POST | `set_clip_configurations` |
 | `/api/download/sample-pack/{clip_id}` | GET | `download_sample_pack` |
+| `/api/unified/feed` | POST | `list_albums`, `get_album` |
+| `/api/playlist/create/` | POST | `create_playlist`, `create_album` |
+| `/api/playlist/v2/{playlist_id}` | PATCH | `update_album_metadata` |
+| `/api/playlist/v2/{playlist_id}/tracks/add` | POST | `add_to_playlist`, `add_songs_to_album` |
+| `/api/playlist/v2/{playlist_id}/tracks/remove` | POST | `remove_from_playlist`, `remove_songs_from_album` |
+| `/api/playlist/v2/{playlist_id}/tracks/reorder-by-index` | POST | `reorder_playlist`, `reorder_album_tracks` |
+| `/api/playlist/v2/{playlist_id}/album/publish` | POST | `publish_album` |
+| `/api/playlist/v2/{playlist_id}/album/unpublish` | POST | `unpublish_album` |
+| `/api/playlist/v2/{playlist_id}/trash` | POST | `delete_playlist`, `delete_album`, `restore_album` |
+| `/api/playlist/v2/{playlist_id}/save` | POST/DELETE | `like_album`, `like_playlist` |
+| `/api/playlist/v2/{playlist_id}/pin` | POST/DELETE | `pin_album`, `pin_playlist` |
+| `/api/notification/v3` | GET | `list_notifications` |
+| `/api/notification/v2/read` | POST | `mark_notifications_read` |
+| `/api/notification/v2/badge-count` | GET | `get_notification_badge` |
+| `/api/notification/v2/clear-badge` | POST | `clear_notification_badge` |
+| `/api/billing/info/` | GET | `list_custom_models` |
+| `/api/custom-model/bases/` | GET | `list_custom_model_bases` |
+| `/api/custom-model/pending/` | GET | `get_pending_custom_models` |
+| `/api/custom-model/edit/` | PUT | `rename_custom_model` |
+| `/api/custom-model/archive/` | POST | `archive_custom_model` |
+| `/api/lyricists` | GET/POST | `list_lyricists`, `create_lyricist` |
+| `/api/lyricists/{lyricist_id}` | GET/PATCH/DELETE | `get_lyricist`, `update_lyricist`, `delete_lyricist` |
+| `/api/lyrics-projects` | GET/POST | `list_lyrics_projects`, `create_lyrics_project` |
+| `/api/lyrics-projects/{project_id}` | GET/PATCH/DELETE | `get_lyrics_project`, `update_lyrics_project`, `delete_lyrics_project` |
+| `/api/lyrics-projects/{project_id}/flush` | POST | `flush_lyrics_project` |
+| `/api/visual/models` | GET | `get_visual_models`, `generate_cover_art` |
+| `/api/visual/generations` | POST | `generate_cover_art` |
+| `/api/visual/generations/{id}` | GET | `get_visual_generation` |

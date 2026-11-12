@@ -157,7 +157,7 @@ const EXPECTED_TOOLS = [
   // library
   'list_library', 'get_song', 'get_songs_by_ids', 'search_songs',
   'search_users', 'get_profile', 'get_current_user', 'get_user_session',
-  'get_library_stats', 'get_db_songs',
+  'get_library_stats', 'get_db_songs', 'search_by_lyrics',
   // downloads
   'get_song_urls', 'download_song', 'download_lyrics', 'download_cover_image',
   // personas
@@ -169,6 +169,23 @@ const EXPECTED_TOOLS = [
   // playlists
   'list_playlists', 'create_playlist', 'get_playlist', 'add_to_playlist',
   'remove_from_playlist', 'reorder_playlist', 'delete_playlist', 'update_playlist_metadata',
+  // albums
+  'list_albums', 'get_album', 'search_albums', 'create_album',
+  'update_album_metadata', 'add_songs_to_album', 'remove_songs_from_album',
+  'reorder_album_tracks', 'publish_album', 'unpublish_album', 'delete_album', 'restore_album',
+  // reactions
+  'like_album', 'like_playlist', 'pin_album', 'pin_playlist', 'set_playlist_visibility',
+  // covers / visuals
+  'get_visual_models', 'generate_cover_art', 'get_visual_generation', 'set_cover', 'download_cover',
+  // notifications
+  'list_notifications', 'mark_notifications_read', 'get_notification_badge', 'clear_notification_badge',
+  // custom models
+  'list_custom_models', 'list_custom_model_bases', 'get_pending_custom_models',
+  'rename_custom_model', 'archive_custom_model',
+  // lyrics projects & lyricists
+  'list_lyricists', 'get_lyricist', 'create_lyricist', 'update_lyricist', 'delete_lyricist',
+  'list_lyrics_projects', 'get_lyrics_project', 'create_lyrics_project', 'update_lyrics_project',
+  'flush_lyrics_project', 'delete_lyrics_project',
   // workspaces
   'list_projects', 'get_project', 'get_project_clips',
   'create_workspace', 'add_songs_to_workspace', 'remove_songs_from_workspace', 'move_songs_to_workspace',
@@ -202,7 +219,7 @@ describe('MCP Server — startup & protocol', () => {
   test('tools/list returns all tools', async () => {
     const result = await client.listTools();
     const names = result.tools.map(t => t.name);
-    assert.equal(result.tools.length, 78, 'Expected 78 tools');
+    assert.equal(result.tools.length, 121, 'Expected 121 tools');
     for (const expected of EXPECTED_TOOLS) {
       assert.ok(names.includes(expected), `Missing tool: ${expected}`);
     }
@@ -216,6 +233,23 @@ describe('MCP Server — startup & protocol', () => {
       assert.ok(typeof tool.inputSchema === 'object', `Tool ${tool.name} missing inputSchema`);
       assert.equal(tool.inputSchema.type, 'object', `Tool ${tool.name} inputSchema.type should be "object"`);
     }
+  });
+
+  test('every tool has a title and MCP annotations', async () => {
+    const result = await client.listTools();
+    for (const tool of result.tools) {
+      assert.equal(typeof tool.title, 'string', `Tool ${tool.name} missing title`);
+      assert.ok(tool.title.length > 0, `Tool ${tool.name} has an empty title`);
+      assert.equal(typeof tool.annotations, 'object', `Tool ${tool.name} missing annotations`);
+      for (const key of ['readOnlyHint', 'destructiveHint', 'idempotentHint', 'openWorldHint']) {
+        assert.equal(typeof tool.annotations[key], 'boolean', `Tool ${tool.name} missing ${key}`);
+      }
+    }
+    const byName = Object.fromEntries(result.tools.map(t => [t.name, t]));
+    assert.equal(byName.get_album.annotations.readOnlyHint, true);
+    assert.equal(byName.delete_album.annotations.destructiveHint, true);
+    assert.equal(byName.create_song.annotations.openWorldHint, true);
+    assert.equal(byName.list_albums.annotations.openWorldHint, false);
   });
 
   test('create_song requires lyrics parameter', async () => {
@@ -494,6 +528,57 @@ describe('MCP Server — with mock token via WebSocket bridge', () => {
     const data = JSON.parse(res.content[0].text);
     assert.equal(data.count, 1, 'only own songs returned');
     assert.equal(data.clips[0].id, 'own1');
+  });
+
+  test('search_by_lyrics finds a phrase and respects creation-date bounds', async () => {
+    mockApi.setResponse('/api/feed/v3', {
+      status: 200,
+      body: () => ({
+        clips: [
+          {
+            id: 'july-song',
+            title: 'July Song',
+            created_at: '2026-07-01T00:00:00.000Z',
+            metadata: { prompt: "The dampening field is at maximum, but I'm fighting it." },
+          },
+          {
+            id: 'june-match',
+            title: 'Dampening Field',
+            created_at: '2026-06-07T06:29:07.319Z',
+            metadata: { prompt: "The dampening field is at maximum, but I'm fighting it." },
+          },
+          {
+            id: 'june-other',
+            title: 'Other June Song',
+            created_at: '2026-06-15T00:00:00.000Z',
+            metadata: { prompt: 'Unrelated lyrics' },
+          },
+          {
+            id: 'may-song',
+            title: 'May Song',
+            created_at: '2026-05-31T00:00:00.000Z',
+            metadata: { prompt: "The dampening field is at maximum, but I'm fighting it." },
+          },
+        ],
+        next_cursor: 'should-not-be-requested',
+      }),
+    });
+    mockApi.requests.length = 0;
+
+    const res = await client.callTool('search_by_lyrics', {
+      query: 'the dampening field is at maximum but im fighting it',
+      created_after: '2026-06-01',
+      created_before: '2026-06-30',
+    });
+    const data = JSON.parse(res.content[0].text);
+
+    assert.equal(data.source, 'api_feed');
+    assert.equal(data.scanned, 2, 'July is skipped, May stops the scan, June songs are scanned');
+    assert.equal(data.with_lyrics, 2);
+    assert.equal(data.match_count, 1);
+    assert.equal(data.matches[0].id, 'june-match');
+    assert.equal(data.matches[0].excerpt, "The dampening field is at maximum, but I'm fighting it.");
+    assert.equal(mockApi.requests.length, 1, 'date bounds should stop the scan before the next page');
   });
 
   test('list_playlists calls /api/playlist/me with GET', async () => {
@@ -897,6 +982,439 @@ describe('MCP Server — with mock token via WebSocket bridge', () => {
 
     await client.callTool('delete_playlist', { playlist_id: 'pl-del' });
     assert.equal(mockApi.requests[0].method, 'POST');
+    assert.deepEqual(mockApi.requests[0].body, { undo: false });
+  });
+
+  test('list_albums reads the library_albums unified feed', async () => {
+    mockApi.setResponse('/api/unified/feed', {
+      status: 200,
+      body: {
+        feed: {
+          feed_id: 'library_albums',
+          feed_title: 'Albums',
+          item_count: 2,
+          next_cursor: 'albums-c1',
+          items: [
+            {
+              content_id: 'album-1',
+              content_type: 'album',
+              content_item: {
+                id: 'album-1',
+                name: 'Album One',
+                song_count: 3,
+                album_type: 'lp',
+                lifecycle_state: 'draft',
+                is_owned: true,
+              },
+            },
+            {
+              content_id: 'album-2',
+              content_type: 'album',
+              content_item: {
+                id: 'album-2',
+                name: 'Album Two',
+                song_count: 5,
+                album_type: 'ep',
+                lifecycle_state: 'published',
+                is_owned: true,
+              },
+            },
+          ],
+        },
+      },
+    });
+    mockApi.requests.length = 0;
+
+    const res = await client.callTool('list_albums', { limit: 10 });
+    const data = JSON.parse(res.content[0].text);
+
+    assert.equal(mockApi.requests[0].path, '/api/unified/feed');
+    assert.equal(mockApi.requests[0].body.feed_id, 'library_albums');
+    assert.equal(mockApi.requests[0].body.page_size, 10);
+    assert.equal(data.albums.length, 2);
+    assert.equal(data.albums[0].id, 'album-1');
+    assert.equal(data.albums[0].lifecycle_state, 'draft');
+    assert.equal(data.next_cursor, 'albums-c1');
+  });
+
+  test('get_album reads the album feed and returns tracks', async () => {
+    mockApi.setResponse('/api/unified/feed', {
+      status: 200,
+      body: {
+        feed: {
+          feed_id: 'album:album-1',
+          feed_container_id: 'album-1',
+          feed_title: 'Album One',
+          feed_image_url: 'https://cdn2.suno.ai/album.jpeg',
+          item_count: 1,
+          next_cursor: null,
+          feed_metadata: {
+            description: 'A test album',
+            is_public: true,
+            is_owned: true,
+            can_edit: true,
+            album_type: 'lp',
+            lifecycle_state: 'published',
+            song_count: 1,
+            total_duration_seconds: 120,
+            owner: { external_user_id: 'me-123', handle: 'me' },
+          },
+          items: [
+            {
+              content_id: 'clip-1',
+              content_type: 'clip',
+              content_item: {
+                id: 'clip-1',
+                title: 'Track One',
+                is_public: true,
+                metadata: { duration: 120 },
+              },
+            },
+          ],
+        },
+      },
+    });
+    mockApi.requests.length = 0;
+
+    const res = await client.callTool('get_album', { album_id: 'album-1' });
+    const data = JSON.parse(res.content[0].text);
+
+    assert.equal(mockApi.requests[0].body.feed_id, 'album:album-1');
+    assert.equal(data.album.id, 'album-1');
+    assert.equal(data.album.lifecycle_state, 'published');
+    assert.equal(data.album.song_count, 1);
+    assert.equal(data.tracks.length, 1);
+    assert.equal(data.tracks[0].id, 'clip-1');
+    assert.equal(data.tracks[0].duration, 120);
+  });
+
+  test('create_album sends playlist_type album and returns feed metadata', async () => {
+    mockApi.setResponse('/api/playlist/create/', {
+      status: 200,
+      body: { id: 'new-album', name: 'New Album', song_count: 0 },
+    });
+    mockApi.setResponse('/api/unified/feed', {
+      status: 200,
+      body: {
+        feed: {
+          feed_id: 'album:new-album',
+          feed_container_id: 'new-album',
+          feed_title: 'New Album',
+          item_count: 0,
+          feed_metadata: {
+            album_type: 'ep',
+            lifecycle_state: 'draft',
+            song_count: 0,
+            is_owned: true,
+            is_public: false,
+          },
+          items: [],
+        },
+      },
+    });
+    mockApi.requests.length = 0;
+
+    const res = await client.callTool('create_album', {
+      name: 'New Album',
+      description: 'A new album',
+      album_type: 'ep',
+    });
+    const data = JSON.parse(res.content[0].text);
+
+    assert.equal(mockApi.requests[0].path, '/api/playlist/create/');
+    assert.equal(mockApi.requests[0].body.name, 'New Album');
+    assert.equal(mockApi.requests[0].body.playlist_type, 'album');
+    assert.equal(mockApi.requests[0].body.album_type, 'ep');
+    assert.equal(mockApi.requests[0].body.description, 'A new album');
+    assert.equal(mockApi.requests[1].body.feed_id, 'album:new-album');
+    assert.equal(data.album.id, 'new-album');
+    assert.equal(data.album.lifecycle_state, 'draft');
+  });
+
+  test('publish_album posts use_album_cover after ownership check', async () => {
+    mockApi.setResponse('/api/playlist/v2/album-1', {
+      status: 200,
+      body: {
+        metadata: { id: 'album-1', name: 'Album One' },
+        relationship: { is_owned: true, is_trashed: false },
+      },
+    });
+    mockApi.setResponse('/api/playlist/v2/album-1/album/publish', {
+      status: 200,
+      body: { success: true, published_clip_ids: ['clip-1'] },
+    });
+    mockApi.requests.length = 0;
+
+    const res = await client.callTool('publish_album', { album_id: 'album-1', use_album_cover: true });
+    const data = JSON.parse(res.content[0].text);
+
+    assert.equal(mockApi.requests[0].path, '/api/playlist/v2/album-1');
+    assert.equal(mockApi.requests[1].path, '/api/playlist/v2/album-1/album/publish');
+    assert.equal(mockApi.requests[1].body.use_album_cover, true);
+    assert.equal(data.success, true);
+  });
+
+  test('delete_album and restore_album send undo flags', async () => {
+    mockApi.setResponse('/api/playlist/v2/album-1', {
+      status: 200,
+      body: {
+        metadata: { id: 'album-1', name: 'Album One' },
+        relationship: { is_owned: true, is_trashed: false },
+      },
+    });
+    mockApi.setResponse('/api/playlist/v2/album-1/trash', {
+      status: 200,
+      body: { success: true },
+    });
+    mockApi.requests.length = 0;
+
+    await client.callTool('delete_album', { album_id: 'album-1' });
+    const deleteReq = mockApi.requests.find(r => r.path === '/api/playlist/v2/album-1/trash');
+    assert.deepEqual(deleteReq.body, { undo: false });
+
+    mockApi.setResponse('/api/playlist/v2/album-1', {
+      status: 200,
+      body: {
+        metadata: { id: 'album-1', name: 'Album One' },
+        relationship: { is_owned: true, is_trashed: true },
+      },
+    });
+    mockApi.requests.length = 0;
+
+    await client.callTool('restore_album', { album_id: 'album-1' });
+    const restoreReq = mockApi.requests.find(r => r.path === '/api/playlist/v2/album-1/trash');
+    assert.deepEqual(restoreReq.body, { undo: true });
+  });
+
+  test('add_songs_to_album posts clip_ids after ownership check', async () => {
+    mockApi.setResponse('/api/playlist/v2/album-1', {
+      status: 200,
+      body: {
+        metadata: { id: 'album-1', name: 'Album One' },
+        relationship: { is_owned: true, is_trashed: false },
+      },
+    });
+    mockApi.setResponse('/api/playlist/v2/album-1/tracks/add', {
+      status: 200,
+      body: { successes: ['clip-1'], failures: [] },
+    });
+    mockApi.requests.length = 0;
+
+    const res = await client.callTool('add_songs_to_album', { album_id: 'album-1', clip_ids: ['clip-1'] });
+    const data = JSON.parse(res.content[0].text);
+
+    assert.equal(mockApi.requests[1].path, '/api/playlist/v2/album-1/tracks/add');
+    assert.deepEqual(mockApi.requests[1].body.clip_ids, ['clip-1']);
+    assert.deepEqual(data.successes, ['clip-1']);
+  });
+
+  test('search_albums uses the public album search type', async () => {
+    mockApi.setResponse('/api/search/', {
+      status: 200,
+      body: {
+        result: {
+          albums: {
+            total_hits: 1,
+            result: [{
+              id: 'album-public',
+              name: 'Public Album',
+              album_type: 'lp',
+              lifecycle_state: 'published',
+              user_handle: 'someone',
+            }],
+          },
+        },
+      },
+    });
+    mockApi.requests.length = 0;
+
+    const res = await client.callTool('search_albums', { query: 'Public Album' });
+    const data = JSON.parse(res.content[0].text);
+
+    assert.equal(mockApi.requests[0].path, '/api/search/');
+    assert.equal(mockApi.requests[0].body.search_queries[0].search_type, 'album');
+    assert.equal(data.albums[0].id, 'album-public');
+    assert.equal(data.total, 1);
+  });
+
+  test('like_album saves and unsaves via POST/DELETE', async () => {
+    mockApi.setResponse('/api/playlist/v2/album-1/save', {
+      status: 200,
+      body: { success: true },
+    });
+    mockApi.requests.length = 0;
+
+    await client.callTool('like_album', { album_id: 'album-1', like: true });
+    await client.callTool('like_album', { album_id: 'album-1', like: false });
+
+    assert.equal(mockApi.requests[0].method, 'POST');
+    assert.equal(mockApi.requests[0].path, '/api/playlist/v2/album-1/save');
+    assert.equal(mockApi.requests[1].method, 'DELETE');
+    assert.equal(mockApi.requests[1].path, '/api/playlist/v2/album-1/save');
+  });
+
+  test('set_cover patches cover_image_s3_id metadata', async () => {
+    mockApi.setResponse('/api/playlist/v2/album-1', {
+      status: 200,
+      body: { success: true },
+    });
+    mockApi.requests.length = 0;
+
+    await client.callTool('set_cover', {
+      target_type: 'album',
+      target_id: 'album-1',
+      cover_image_s3_id: 'image_test',
+    });
+
+    assert.equal(mockApi.requests[0].method, 'PATCH');
+    assert.equal(mockApi.requests[0].path, '/api/playlist/v2/album-1');
+    assert.equal(mockApi.requests[0].body.metadata.cover_image_s3_id, 'image_test');
+  });
+
+  test('set_playlist_visibility patches is_public', async () => {
+    mockApi.setResponse('/api/playlist/v2/pl-1', {
+      status: 200,
+      body: { success: true },
+    });
+    mockApi.requests.length = 0;
+
+    await client.callTool('set_playlist_visibility', { playlist_id: 'pl-1', is_public: true });
+
+    assert.equal(mockApi.requests[0].method, 'PATCH');
+    assert.equal(mockApi.requests[0].body.metadata.is_public, true);
+  });
+
+  test('list_notifications uses the v3 feed and mark_notifications_read posts ids', async () => {
+    mockApi.setResponse('/api/notification/v3', {
+      status: 200,
+      body: {
+        notified_at: '2026-11-12T00:00:00.000Z',
+        next_before_datetime_utc: 'cursor-1',
+        notifications: [{
+          id: 'n1',
+          notification_type: 'clip_like',
+          is_read: false,
+          updated_at: '2026-11-12T00:00:00.000Z',
+        }],
+      },
+    });
+    mockApi.setResponse('/api/notification/v2/read', {
+      status: 200,
+      body: { success: true },
+    });
+    mockApi.requests.length = 0;
+
+    const listRes = await client.callTool('list_notifications', { cursor: 'old-cursor' });
+    const listData = JSON.parse(listRes.content[0].text);
+    assert.ok(mockApi.requests[0].url.includes('before_datetime_utc=old-cursor'));
+    assert.equal(listData.notifications[0].id, 'n1');
+    assert.equal(listData.next_cursor, 'cursor-1');
+
+    await client.callTool('mark_notifications_read', { notification_ids: ['n1'] });
+    const readReq = mockApi.requests.find(r => r.path === '/api/notification/v2/read');
+    assert.deepEqual(readReq.body, { ids: ['n1'] });
+  });
+
+  test('list_custom_models filters the billing model list', async () => {
+    mockApi.setResponse('/api/billing/info/', {
+      status: 200,
+      body: {
+        max_active_custom_models: 3,
+        models: [
+          { external_key: 'chirp-custom:abc', name: 'My Voice', badges: ['custom'], can_use: true },
+          { external_key: 'chirp-hawk', name: 'v6', badges: ['pro'], can_use: true },
+        ],
+      },
+    });
+    mockApi.requests.length = 0;
+
+    const res = await client.callTool('list_custom_models');
+    const data = JSON.parse(res.content[0].text);
+    assert.equal(data.count, 1);
+    assert.equal(data.models[0].id, 'chirp-custom:abc');
+    assert.equal(data.max_active_custom_models, 3);
+  });
+
+  test('rename_custom_model uses PUT /api/custom-model/edit/', async () => {
+    mockApi.setResponse('/api/custom-model/edit/', {
+      status: 200,
+      body: { success: true },
+    });
+    mockApi.requests.length = 0;
+
+    await client.callTool('rename_custom_model', { custom_model_id: 'chirp-custom:abc', name: 'Renamed' });
+
+    assert.equal(mockApi.requests[0].method, 'PUT');
+    assert.equal(mockApi.requests[0].path, '/api/custom-model/edit/');
+    assert.deepEqual(mockApi.requests[0].body, { id: 'chirp-custom:abc', name: 'Renamed' });
+  });
+
+  test('list_lyricists and flush_lyrics_project use the lyrics endpoints', async () => {
+    mockApi.setResponse('/api/lyricists', {
+      status: 200,
+      body: {
+        lyricists: [{
+          id: 'l1',
+          title: 'Noir Poet',
+          description: 'Short, bleak lines',
+          samples: [{ kind: 'text', text: 'The rain remembers.' }],
+          is_favorited: true,
+        }],
+        next_cursor: null,
+      },
+    });
+    mockApi.setResponse('/api/lyrics-projects/p1/flush', {
+      status: 200,
+      body: { success: true },
+    });
+    mockApi.requests.length = 0;
+
+    const lyricistsRes = await client.callTool('list_lyricists', { limit: 10 });
+    const lyricists = JSON.parse(lyricistsRes.content[0].text);
+    assert.equal(lyricists.lyricists[0].name, 'Noir Poet');
+    assert.deepEqual(lyricists.lyricists[0].sample_lyrics, ['The rain remembers.']);
+
+    await client.callTool('flush_lyrics_project', { project_id: 'p1', lyrics: 'new lyrics' });
+    const flushReq = mockApi.requests.find(r => r.path === '/api/lyrics-projects/p1/flush');
+    assert.deepEqual(flushReq.body, { lyrics: 'new lyrics' });
+  });
+
+  test('generate_cover_art posts a visual generation body when a model is supplied', async () => {
+    mockApi.setResponse('/api/visual/generations', {
+      status: 200,
+      body: { id: 'gen-1', status: 'queued' },
+    });
+    mockApi.requests.length = 0;
+
+    const res = await client.callTool('generate_cover_art', {
+      prompt: 'a dark album cover',
+      model: 'visual-image-1',
+      aspect_ratio: '1:1',
+      takes: 2,
+    });
+    const data = JSON.parse(res.content[0].text);
+
+    assert.equal(mockApi.requests[0].method, 'POST');
+    assert.equal(mockApi.requests[0].path, '/api/visual/generations');
+    assert.equal(mockApi.requests[0].body.prompt, 'a dark album cover');
+    assert.equal(mockApi.requests[0].body.model, 'visual-image-1');
+    assert.equal(mockApi.requests[0].body.takes, 2);
+    assert.equal(mockApi.requests[0].body.aspect, '1:1');
+    assert.equal(mockApi.requests[0].body.task, 'visual_image');
+    assert.equal(data.id, 'gen-1');
+  });
+
+  test('generate_cover_art surfaces feature_disabled from the visual API', async () => {
+    mockApi.setResponse('/api/visual/models', {
+      status: 403,
+      body: { detail: 'Visuals aren\'t available right now.', error_type: 'feature_disabled' },
+    });
+    mockApi.requests.length = 0;
+
+    await assert.rejects(
+      () => client.callTool('generate_cover_art', { prompt: 'a dark album cover' }),
+      /Visuals aren't available right now/
+    );
   });
 
   test('401 response surfaces token expiry error', async () => {

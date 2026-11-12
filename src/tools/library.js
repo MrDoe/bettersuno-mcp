@@ -78,6 +78,101 @@ function toSlimDbSong(song) {
   return slim;
 }
 
+const MONTH_ONLY_RE = /^\d{4}-\d{2}$/;
+const DATE_ONLY_RE = /^\d{4}-\d{2}-\d{2}$/;
+const LYRIC_CLIP_BATCH_SIZE = 100;
+
+function parseDateBound(value, { endOfDay = false } = {}) {
+  if (value === undefined || value === null || value === '') return null;
+  const raw = String(value).trim();
+  if (!raw) return null;
+  if (MONTH_ONLY_RE.test(raw)) {
+    const [year, month] = raw.split('-').map(Number);
+    if (month < 1 || month > 12) throw new Error(`Invalid date: ${raw}`);
+    const start = Date.UTC(year, month - 1, 1);
+    return endOfDay ? Date.UTC(year, month, 1) - 1 : start;
+  }
+  if (DATE_ONLY_RE.test(raw)) {
+    const start = Date.parse(`${raw}T00:00:00.000Z`);
+    if (!Number.isFinite(start)) throw new Error(`Invalid date: ${raw}`);
+    return endOfDay ? start + 86400000 - 1 : start;
+  }
+  const ts = Date.parse(raw);
+  if (!Number.isFinite(ts)) throw new Error(`Invalid date: ${raw}`);
+  return ts;
+}
+
+// Case-, punctuation-, and whitespace-insensitive text used for lyric matching.
+function normalizeLyricText(value) {
+  return String(value || '')
+    .normalize('NFKC')
+    .toLowerCase()
+    .replace(/['\u2018\u2019\u02BC]/g, '')
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .trim();
+}
+
+function findLyricExcerpt(prompt, normalizedQuery) {
+  const text = String(prompt || '');
+  const words = normalizedQuery.split(' ').filter(word => word.length >= 3);
+  let best = '';
+  let bestScore = -1;
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    const normalizedLine = normalizeLyricText(line);
+    let score = 0;
+    if (normalizedLine.includes(normalizedQuery)) score += words.length + 1;
+    for (const word of words) {
+      if (normalizedLine.includes(word)) score += 1;
+    }
+    if (score > bestScore) {
+      bestScore = score;
+      best = line;
+    }
+  }
+  const excerpt = best || text.trim().slice(0, 300);
+  return excerpt.length > 500 ? `${excerpt.slice(0, 497)}...` : excerpt;
+}
+
+async function fetchClipsByIds(ids) {
+  const clipsById = new Map();
+  for (let index = 0; index < ids.length; index += LYRIC_CLIP_BATCH_SIZE) {
+    const batch = ids.slice(index, index + LYRIC_CLIP_BATCH_SIZE);
+    const result = await sunoClient.POST('/api/feed/v3', {
+      body: {
+        limit: batch.length,
+        filters: { ids: { presence: 'True', clipIds: batch } },
+      },
+    });
+    if (!result.ok) throw new Error(result.error || 'Failed to fetch clips for lyric search');
+    for (const clip of result.data?.clips || []) {
+      if (clip?.id) clipsById.set(clip.id, clip);
+    }
+    if (index + LYRIC_CLIP_BATCH_SIZE < ids.length) {
+      await new Promise(resolve => setTimeout(resolve, 200));
+    }
+  }
+  return clipsById;
+}
+
+function lyricMatch(clip, normalizedQuery, includeLyrics) {
+  const prompt = clip.metadata?.prompt || '';
+  const match = {
+    id: clip.id,
+    title: clip.title || null,
+    created_at: clip.created_at || null,
+    model_name: clip.model_name || null,
+    major_model_version: clip.major_model_version || null,
+    is_public: !!clip.is_public,
+    duration: clip.metadata?.duration ?? null,
+    tags: clip.metadata?.tags || null,
+    excerpt: findLyricExcerpt(prompt, normalizedQuery),
+  };
+  if (includeLyrics) match.lyrics = prompt;
+  return match;
+}
+
 function tool(name, description, inputSchema, handler) {
   return { name, description, inputSchema, handler };
 }
@@ -393,6 +488,146 @@ export function registerLibraryTools(server, allTools) {
       if (args.include_stats) result.stats = summarizeDbSongs(filtered);
       result.songs = page;
       return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+    }),
+
+    tool('search_by_lyrics', 'Search the user\'s own songs for a lyric phrase. Matching is case-, punctuation-, and whitespace-insensitive. When the BetterSuno extension is connected, candidates come from its IndexedDB cache (fast, no feed pagination) and can be narrowed with created_after/created_before; full clips are then fetched in batches to inspect metadata.prompt. Falls back to paginating feed/v3 when the extension is unavailable.', {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Lyric phrase to find (case- and punctuation-insensitive; line breaks and extra whitespace are ignored)' },
+        created_after: { type: 'string', description: 'Only songs created on/after this date. Accepts ISO 8601, YYYY-MM-DD, or YYYY-MM (month start)' },
+        created_before: { type: 'string', description: 'Only songs created on/before this date. Accepts ISO 8601, YYYY-MM-DD, or YYYY-MM (date-only values include the whole day/month)' },
+        source: { type: 'string', enum: ['auto', 'db', 'api'], description: 'Candidate source: auto (extension DB, fall back to feed), db (extension DB only), api (paginate feed/v3)', default: 'auto' },
+        max_songs: { type: 'number', description: 'Maximum candidate songs to inspect (default 2500). Applies to DB candidates and the API fallback.', default: 2500 },
+        limit: { type: 'number', description: 'Maximum matching songs to return (default 100)', default: 100 },
+        include_lyrics: { type: 'boolean', description: 'Include the full lyrics (metadata.prompt) for each match', default: false },
+      },
+      required: ['query'],
+    }, async (args) => {
+      const query = String(args.query || '').trim();
+      if (!query) throw new Error('query is required');
+      const normalizedQuery = normalizeLyricText(query);
+      if (!normalizedQuery) throw new Error('query must contain at least one letter or number');
+
+      const createdAfter = parseDateBound(args.created_after, { endOfDay: false });
+      const createdBefore = parseDateBound(args.created_before, { endOfDay: true });
+      if (createdAfter !== null && createdBefore !== null && createdAfter > createdBefore) {
+        throw new Error('created_after must be before created_before');
+      }
+
+      const source = ['auto', 'db', 'api'].includes(args.source) ? args.source : 'auto';
+      const maxSongs = Math.max(1, Math.min(50000, parseInt(args.max_songs, 10) || 2500));
+      const limit = Math.max(1, Math.min(1000, parseInt(args.limit, 10) || 100));
+      const includeLyrics = args.include_lyrics === true;
+
+      let candidates = null;
+      let dbError = null;
+      if (source !== 'api') {
+        try {
+          const { songs, fetchedAt } = await loadExtensionDbSongs();
+          const inRange = [];
+          for (const song of songs) {
+            const ts = getSongTimestamp(song);
+            if (!ts) continue;
+            if (createdAfter !== null && ts < createdAfter) continue;
+            if (createdBefore !== null && ts > createdBefore) continue;
+            inRange.push(song);
+          }
+          inRange.sort((a, b) => getSongTimestamp(b) - getSongTimestamp(a));
+          const selected = inRange.slice(0, maxSongs);
+          candidates = {
+            ids: [...new Set(selected.map(song => song.id).filter(Boolean))],
+            source: 'extension_indexeddb',
+            db_total: songs.length,
+            db_fetched_at: fetchedAt,
+            candidates_total: inRange.length,
+            truncated: inRange.length > selected.length,
+          };
+        } catch (err) {
+          dbError = err.message;
+          if (source === 'db') throw err;
+        }
+      }
+
+      const allMatches = [];
+      let scanned = 0;
+      let withLyrics = 0;
+      let truncated = !!(candidates && candidates.truncated);
+
+      if (candidates) {
+        const clipsById = await fetchClipsByIds(candidates.ids);
+        for (const id of candidates.ids) {
+          const clip = clipsById.get(id);
+          if (!clip) continue;
+          scanned += 1;
+          const prompt = clip.metadata?.prompt || '';
+          if (!prompt) continue;
+          withLyrics += 1;
+          if (normalizeLyricText(prompt).includes(normalizedQuery)) {
+            allMatches.push(lyricMatch(clip, normalizedQuery, includeLyrics));
+          }
+        }
+      } else {
+        // Feed pagination is newest-first, so a created_after bound lets us stop
+        // as soon as we reach older songs.
+        let cursor = null;
+        let reachedOlder = false;
+        let reachedMax = false;
+        while (scanned < maxSongs && !reachedOlder) {
+          const result = await sunoClient.POST('/api/feed/v3', { body: { limit: 50, cursor } });
+          if (!result.ok) throw new Error(result.error || 'Failed to fetch library');
+          const clips = result.data?.clips || [];
+          if (clips.length === 0) break;
+          for (const clip of clips) {
+            if (scanned >= maxSongs) {
+              reachedMax = true;
+              break;
+            }
+            const ts = Date.parse(clip.created_at || '');
+            const hasTs = Number.isFinite(ts);
+            if (createdBefore !== null && hasTs && ts > createdBefore) continue;
+            if (createdAfter !== null && hasTs && ts < createdAfter) {
+              reachedOlder = true;
+              continue;
+            }
+            scanned += 1;
+            const prompt = clip.metadata?.prompt || '';
+            if (!prompt) continue;
+            withLyrics += 1;
+            if (normalizeLyricText(prompt).includes(normalizedQuery)) {
+              allMatches.push(lyricMatch(clip, normalizedQuery, includeLyrics));
+            }
+          }
+          cursor = result.data?.next_cursor || null;
+          if (!cursor) break;
+          if (scanned < maxSongs && !reachedOlder) {
+            await new Promise(resolve => setTimeout(resolve, 750));
+          }
+        }
+        if (reachedMax || (scanned >= maxSongs && cursor)) truncated = true;
+      }
+
+      const matches = allMatches.slice(0, limit);
+      if (allMatches.length > limit) truncated = true;
+
+      const response = {
+        query,
+        normalized_query: normalizedQuery,
+        created_after: args.created_after ?? null,
+        created_before: args.created_before ?? null,
+        source: candidates?.source || 'api_feed',
+        scanned,
+        with_lyrics: withLyrics,
+        match_count: matches.length,
+        truncated,
+        matches,
+      };
+      if (candidates) {
+        response.db_total = candidates.db_total;
+        response.db_fetched_at = candidates.db_fetched_at;
+        response.candidates_total = candidates.candidates_total;
+      }
+      if (dbError) response.db_fallback_reason = dbError;
+      return { content: [{ type: 'text', text: JSON.stringify(response, null, 2) }] };
     }),
   ];
 

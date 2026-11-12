@@ -1,6 +1,6 @@
 {
   "name": "bettersuno-mcp",
-  "version": "1.1.2",
+  "version": "1.2.0",
   "description": "MCP server for BetterSuno — exposes Suno API features to AI agents via the Model Context Protocol",
   "type": "module",
   "bin": {

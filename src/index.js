@@ -10,6 +10,12 @@ import { registerDownloadTools } from './tools/downloads.js';
 import { registerPersonaTools } from './tools/personas.js';
 import { registerUploadTools } from './tools/uploads.js';
 import { registerPlaylistTools } from './tools/playlists.js';
+import { registerAlbumTools } from './tools/albums.js';
+import { registerReactionTools } from './tools/reactions.js';
+import { registerCoverTools } from './tools/covers.js';
+import { registerNotificationTools } from './tools/notifications.js';
+import { registerCustomModelTools } from './tools/custom-models.js';
+import { registerLyricsProjectTools } from './tools/lyrics-projects.js';
 import { registerWorkspaceTools } from './tools/workspaces.js';
 import { registerMetadataTools } from './tools/metadata.js';
 import { registerPlaybackTools } from './tools/playback.js';
@@ -38,6 +44,12 @@ registerDownloadTools(server, allTools);
 registerPersonaTools(server, allTools);
 registerUploadTools(server, allTools);
 registerPlaylistTools(server, allTools);
+registerAlbumTools(server, allTools);
+registerReactionTools(server, allTools);
+registerCoverTools(server, allTools);
+registerNotificationTools(server, allTools);
+registerCustomModelTools(server, allTools);
+registerLyricsProjectTools(server, allTools);
 registerWorkspaceTools(server, allTools);
 registerMetadataTools(server, allTools);
 registerPlaybackTools(allTools);
@@ -45,7 +57,33 @@ registerCommentTools(allTools);
 registerFeedTools(allTools);
 registerPromptTools(allTools);
 
-server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: allTools }));
+function humanizeToolName(name) {
+  return String(name || '')
+    .split('_')
+    .map((word, index) => (index === 0 ? word.charAt(0).toUpperCase() + word.slice(1) : word))
+    .join(' ');
+}
+
+function inferToolAnnotations(name) {
+  const readOnly = /^(list|get|search|explore|download|find|resolve|read|preview|check|inspect)_/.test(name);
+  const destructive = /^(delete|trash|remove|unpublish|archive)_/.test(name);
+  const idempotent = readOnly || /^(update|set|like|save|pin|restore|archive|flush|mark|clear|rename)_/.test(name);
+  const openWorld = /^(create|generate|inspire|cover|extend|remix|publish|upload|search|explore|run|set)_/.test(name);
+  return {
+    readOnlyHint: readOnly,
+    destructiveHint: destructive,
+    idempotentHint: idempotent,
+    openWorldHint: openWorld,
+  };
+}
+
+server.setRequestHandler(ListToolsRequestSchema, async () => ({
+  tools: allTools.map(({ handler, ...tool }) => ({
+    ...tool,
+    title: tool.title || humanizeToolName(tool.name),
+    annotations: { ...inferToolAnnotations(tool.name), ...(tool.annotations || {}) },
+  })),
+}));
 
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;

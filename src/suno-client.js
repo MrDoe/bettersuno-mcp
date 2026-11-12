@@ -77,6 +77,7 @@ class SunoClient {
   GET(path, opts) { return this._fetch(path, { ...opts, method: 'GET' }); }
   POST(path, opts) { return this._fetch(path, { ...opts, method: 'POST' }); }
   PATCH(path, opts) { return this._fetch(path, { ...opts, method: 'PATCH' }); }
+  PUT(path, opts) { return this._fetch(path, { ...opts, method: 'PUT' }); }
   DELETE(path, opts) { return this._fetch(path, { ...opts, method: 'DELETE' }); }
 
   async captchaCheck(ctype = 'generation') {
