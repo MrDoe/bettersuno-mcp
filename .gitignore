@@ -2,10 +2,12 @@ node_modules/
 projects/
 Downloads/
 2138/
-scripts/
+scripts/*
+!scripts/postinstall.mjs
 .opencode/opencode.json
 *.log
 *.mjs
+!scripts/postinstall.mjs
 *.m4a
 *.flac
 *.mp3
